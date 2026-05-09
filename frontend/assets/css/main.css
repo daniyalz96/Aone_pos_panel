@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+:root {
+  --ui-radius: 0.75rem;
+}
+
+body {
+  @apply bg-neutral-50 text-neutral-900 antialiased transition-colors dark:bg-slate-950 dark:text-slate-100;
+  font-family: Inter, "Segoe UI", Roboto, sans-serif;
+}
+
+.glass-panel {
+  @apply rounded-2xl border border-white/40 bg-white/80 shadow-sm backdrop-blur dark:border-white/10 dark:bg-slate-900/70;
+}

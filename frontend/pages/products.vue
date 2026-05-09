@@ -1,0 +1,973 @@
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { joinURL, withQuery } from 'ufo'
+import { ApiError, useApi } from '~/composables/useApi'
+import { useAuth } from '~/composables/useAuth'
+import { useRuntimeConfig } from '#imports'
+
+const SORT_VALUES = ['created_desc', 'created_asc', 'name_asc', 'name_desc', 'sale_asc', 'sale_desc'] as const
+
+/** USelect may emit a raw value or an item object depending on version / state. */
+function selectToPrimitive(val: unknown): string | undefined {
+  if (val === null || val === undefined) return undefined
+  if (typeof val === 'string') return val.trim()
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val)
+  if (typeof val === 'object' && val !== null && 'value' in val) {
+    const inner = (val as { value: unknown }).value
+    if (inner === null || inner === undefined) return undefined
+    return typeof inner === 'string' ? inner.trim() : String(inner).trim()
+  }
+  return undefined
+}
+
+/** PG / JSON may expose is_active as boolean or string; Boolean("false") === true in JS. */
+function normalizeActiveFlag(v: unknown): boolean {
+  if (v === null || v === undefined) return true
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'number') return v !== 0
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    if (['false', 'f', '0', 'no', 'off', 'disabled', 'n'].includes(s) || s === '') return false
+    if (['true', 't', '1', 'yes', 'on', 'enabled', 'y'].includes(s)) return true
+    /** Unknown string tokens should not implicitly mean "enabled" (fixes incorrect UI status). */
+    return false
+  }
+  return Boolean(v)
+}
+
+/** Coerce checkbox / toggle / stray string into boolean before PATCH POST. */
+function toBooleanStrict(v: unknown, fallback = true): boolean {
+  if (v === null || v === undefined) return fallback
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'number') return v !== 0
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    if (['false', 'f', '0', 'no', 'off', 'unchecked'].includes(s)) return false
+    if (['true', 't', '1', 'yes', 'on', 'checked'].includes(s)) return true
+  }
+  return Boolean(v)
+}
+
+type Category = { id: string; name: string }
+type Product = {
+  id: string
+  name: string
+  sku: string
+  barcode: string
+  sale_price: number
+  cost_price: number
+  tax_rate: number
+  category_name?: string
+  category_id?: string | null
+  image_url?: string | null
+  is_active: boolean
+}
+
+type AuthUser = {
+  id: string
+  email: string
+  roles: string[]
+  permissions: string[]
+}
+
+type ExcelImportRow = {
+  rowNumber: number
+  categoryName: string | null
+  name: string
+  sku: string
+  barcode: string
+  salePrice: number
+  costPrice: number
+  taxRate: number
+  issues: string[]
+}
+
+const { request } = useApi()
+const { user, token, setAuth } = useAuth()
+const config = useRuntimeConfig()
+const NO_CATEGORY_VALUE = '__none__'
+const FILTER_ALL_CATEGORIES = '__all_categories__'
+
+/** Align with backend: permission or admin/manager role. */
+const canManageProducts = computed(() => {
+  const u = user.value
+  if (!u) return false
+  const perms = u.permissions ?? []
+  const roles = u.roles ?? []
+  return perms.includes('manage_inventory') || roles.includes('admin') || roles.includes('manager')
+})
+
+/** Read token/user from localStorage when useState lost them (refresh / direct URL). */
+const hydrateFromStorageEarly = () => {
+  if (!import.meta.client) return
+  if (!token.value && typeof localStorage !== 'undefined') {
+    const t = localStorage.getItem('pos_token')
+    if (t) token.value = t
+  }
+  if (!user.value && typeof localStorage !== 'undefined') {
+    const raw = localStorage.getItem('pos_user')
+    if (!raw) return
+    try {
+      user.value = JSON.parse(raw) as AuthUser
+    } catch {
+      user.value = null
+    }
+  }
+}
+
+const refreshUserProfile = async () => {
+  try {
+    hydrateFromStorageEarly()
+    if (!token.value) return
+    const me = await request<{ id: string; email: string; roles: string[]; permissions: string[] }>('/auth/me')
+    setAuth(token.value, me)
+  } catch {
+    /* keep stored user */
+  }
+}
+
+const isLoading = ref(false)
+const errorMessage = ref('')
+const products = ref<Product[]>([])
+const categories = ref<Category[]>([])
+const query = ref('')
+const filterCategoryId = ref(FILTER_ALL_CATEGORIES)
+const filterStatus = ref<'all' | 'active' | 'inactive'>('all')
+const filterMinSale = ref('')
+const filterMaxSale = ref('')
+const sortBy = ref<'created_desc' | 'created_asc' | 'name_asc' | 'name_desc' | 'sale_asc' | 'sale_desc'>('created_desc')
+const isEditModalOpen = ref(false)
+const editingProductId = ref<string | null>(null)
+const togglingProductId = ref<string | null>(null)
+
+const productForm = reactive({
+  name: '',
+  sku: '',
+  barcode: '',
+  salePrice: 0,
+  costPrice: 0,
+  taxRate: 0,
+  imageUrl: '',
+  categoryId: NO_CATEGORY_VALUE,
+  isActive: true
+})
+
+const categoryForm = reactive({
+  name: '',
+  description: ''
+})
+
+const imageInputRef = ref<HTMLInputElement | null>(null)
+const editImageInputRef = ref<HTMLInputElement | null>(null)
+const excelInputRef = ref<HTMLInputElement | null>(null)
+
+const importPreviewRows = ref<ExcelImportRow[]>([])
+const importPreviewMeta = ref<{ fileName: string; rowCount: number } | null>(null)
+const importParsing = ref(false)
+const importApplying = ref(false)
+
+const validExcelRowCount = computed(() => importPreviewRows.value.filter((r) => r.issues.length === 0).length)
+
+const editForm = reactive({
+  name: '',
+  sku: '',
+  barcode: '',
+  salePrice: 0,
+  costPrice: 0,
+  taxRate: 0,
+  imageUrl: '',
+  categoryId: NO_CATEGORY_VALUE,
+  isActive: true
+})
+
+const filterCategoryItems = computed(() => [
+  { label: 'All categories', value: FILTER_ALL_CATEGORIES },
+  ...categories.value
+    .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
+    .map((category) => ({ label: category.name, value: category.id }))
+])
+
+const statusFilterItems = [
+  { label: 'All statuses', value: 'all' },
+  { label: 'Enabled only', value: 'active' },
+  { label: 'Disabled only', value: 'inactive' }
+]
+
+const sortSelectItems = [
+  { label: 'Newest first', value: 'created_desc' },
+  { label: 'Oldest first', value: 'created_asc' },
+  { label: 'Name A–Z', value: 'name_asc' },
+  { label: 'Name Z–A', value: 'name_desc' },
+  { label: 'Sale price low → high', value: 'sale_asc' },
+  { label: 'Sale price high → low', value: 'sale_desc' }
+]
+
+const categorySelectItems = computed(() => [
+  { label: 'No category', value: NO_CATEGORY_VALUE },
+  ...categories.value
+    .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
+    .map((category) => ({ label: category.name, value: category.id }))
+])
+
+const selectedImagePreview = computed(() => productForm.imageUrl || '')
+const editImagePreview = computed(() => editForm.imageUrl || '')
+
+const onProductImageSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    errorMessage.value = 'Please select a valid image file.'
+    input.value = ''
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    errorMessage.value = 'Image size must be 2MB or less.'
+    input.value = ''
+    return
+  }
+
+  errorMessage.value = ''
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('Failed to read image file'))
+    reader.readAsDataURL(file)
+  }).catch(() => '')
+
+  if (!dataUrl) {
+    errorMessage.value = 'Failed to process selected image.'
+    input.value = ''
+    return
+  }
+
+  productForm.imageUrl = dataUrl
+}
+
+const clearSelectedImage = () => {
+  productForm.imageUrl = ''
+  if (imageInputRef.value) {
+    imageInputRef.value.value = ''
+  }
+}
+
+const onEditProductImageSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    errorMessage.value = 'Please select a valid image file.'
+    input.value = ''
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    errorMessage.value = 'Image size must be 2MB or less.'
+    input.value = ''
+    return
+  }
+
+  errorMessage.value = ''
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('Failed to read image file'))
+    reader.readAsDataURL(file)
+  }).catch(() => '')
+
+  if (!dataUrl) {
+    errorMessage.value = 'Failed to process selected image.'
+    input.value = ''
+    return
+  }
+
+  editForm.imageUrl = dataUrl
+}
+
+const clearEditImage = () => {
+  editForm.imageUrl = ''
+  if (editImageInputRef.value) {
+    editImageInputRef.value.value = ''
+  }
+}
+
+const clearExcelImportPreview = () => {
+  importPreviewRows.value = []
+  importPreviewMeta.value = null
+  if (excelInputRef.value) {
+    excelInputRef.value.value = ''
+  }
+}
+
+const onExcelFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  importParsing.value = true
+  errorMessage.value = ''
+  try {
+    const body = new FormData()
+    body.append('excelFile', file)
+    const uploadUrl = joinURL(config.public.apiBase, '/products/import/excel')
+    const res = await $fetch<{ fileName: string; rowCount: number; rows: ExcelImportRow[] }>(uploadUrl, {
+      method: 'POST',
+      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
+      body
+    })
+    importPreviewMeta.value = { fileName: res.fileName, rowCount: res.rowCount }
+    importPreviewRows.value = res.rows
+    if (!res.rows.length) {
+      errorMessage.value =
+        'No product rows found. Use a header row with columns such as Category, Product name, SKU, Barcode, Sale price.'
+    }
+  } catch (error: unknown) {
+    importPreviewMeta.value = null
+    importPreviewRows.value = []
+    const err = error as { data?: { message?: string }; message?: string }
+    const fromApi = err.data && typeof err.data === 'object' && err.data.message ? String(err.data.message) : ''
+    errorMessage.value = fromApi || err.message || 'Failed to read Excel file.'
+  } finally {
+    importParsing.value = false
+    input.value = ''
+  }
+}
+
+const applyExcelImport = async () => {
+  const rows = importPreviewRows.value.filter((r) => r.issues.length === 0).map((r) => ({
+    rowNumber: r.rowNumber,
+    categoryName: r.categoryName,
+    name: r.name,
+    sku: r.sku,
+    barcode: r.barcode,
+    salePrice: r.salePrice,
+    costPrice: r.costPrice,
+    taxRate: r.taxRate
+  }))
+  if (!rows.length) return
+
+  importApplying.value = true
+  errorMessage.value = ''
+  try {
+    const res = await request<{
+      createdCount: number
+      failedCount: number
+      failed: { rowNumber: number; message: string }[]
+    }>('/products/import/excel/apply', {
+      method: 'POST',
+      body: { rows }
+    })
+    if (res.createdCount > 0) {
+      await loadData()
+    }
+    clearExcelImportPreview()
+    if (res.failedCount > 0 && res.failed?.length) {
+      errorMessage.value = res.failed.map((f) => `Row ${f.rowNumber}: ${f.message}`).join(' · ')
+    }
+  } catch (error: unknown) {
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+    } else {
+      errorMessage.value = (error as { message?: string }).message ?? 'Import failed'
+    }
+  } finally {
+    importApplying.value = false
+  }
+}
+
+/**
+ * Backend list handler expects string query params (`isActive` enum "true"|"false", UUID `categoryId`, etc.).
+ * Keep every serialized value explicitly string-ish so proxies / ofetch cannot drop coercions unexpectedly.
+ */
+const buildProductListQuery = (): Record<string, string | number | boolean> => {
+  const out: Record<string, string | number | boolean> = {}
+
+  const sortRaw = selectToPrimitive(sortBy.value) ?? 'created_desc'
+  out.sort = (SORT_VALUES as readonly string[]).includes(sortRaw) ? sortRaw : 'created_desc'
+
+  const qTrim = query.value.trim()
+  if (qTrim) out.q = qTrim
+
+  const cat = selectToPrimitive(filterCategoryId.value)
+  if (typeof cat === 'string' && cat.length > 0 && cat !== FILTER_ALL_CATEGORIES) {
+    out.categoryId = cat
+  }
+
+  /** List API expects `isActive=true|false` (backend normalizes snake_case aliases separately). */
+  const status = selectToPrimitive(filterStatus.value)
+  if (status === 'active') {
+    out.isActive = 'true'
+  } else if (status === 'inactive') {
+    out.isActive = 'false'
+  }
+
+  const minStr = String(filterMinSale.value ?? '').trim()
+  const maxStr = String(filterMaxSale.value ?? '').trim()
+  const minSale = Number.parseFloat(minStr)
+  const maxSale = Number.parseFloat(maxStr)
+  if (minStr !== '' && !Number.isNaN(minSale) && minSale >= 0) {
+    out.minSalePrice = minSale
+  }
+  if (maxStr !== '' && !Number.isNaN(maxSale) && maxSale >= 0) {
+    out.maxSalePrice = maxSale
+  }
+
+  return out
+}
+
+const clearFilters = () => {
+  query.value = ''
+  filterCategoryId.value = FILTER_ALL_CATEGORIES
+  filterStatus.value = 'all'
+  filterMinSale.value = ''
+  filterMaxSale.value = ''
+  sortBy.value = 'created_desc'
+}
+
+let productFilterDebounce: ReturnType<typeof setTimeout> | null = null
+
+/** Parallel product GETs could finish out-of-order when filters debounce quickly — ignore stale responses. */
+let productFetchGeneration = 0
+
+const productsListUrl = () =>
+  withQuery('/products', buildProductListQuery() as Record<string, string | number | boolean | undefined>)
+
+const productCategorySelectModel = computed({
+  get: () => productForm.categoryId,
+  set: (v: unknown) => {
+    productForm.categoryId = (selectToPrimitive(v) ?? NO_CATEGORY_VALUE) as typeof productForm.categoryId
+  }
+})
+
+const editCategorySelectModel = computed({
+  get: () => editForm.categoryId,
+  set: (v: unknown) => {
+    editForm.categoryId = (selectToPrimitive(v) ?? NO_CATEGORY_VALUE) as typeof editForm.categoryId
+  }
+})
+
+/** Reka/Nuxt UI Checkbox can emit boolean or string — normalize before API. */
+const productActiveCheckModel = computed({
+  get: () => toBooleanStrict(productForm.isActive, true),
+  set: (v: unknown) => {
+    productForm.isActive = toBooleanStrict(v, true)
+  }
+})
+
+const editActiveCheckModel = computed({
+  get: () => toBooleanStrict(editForm.isActive, true),
+  set: (v: unknown) => {
+    editForm.isActive = toBooleanStrict(v, true)
+  }
+})
+
+/** Normalize Nuxt `USelect` v-model (sometimes the full item `{ label, value }` object). */
+const filterCategoryIdModel = computed({
+  get: () => filterCategoryId.value,
+  set: (v: unknown) => {
+    filterCategoryId.value = (selectToPrimitive(v) ?? FILTER_ALL_CATEGORIES) as typeof filterCategoryId.value
+  }
+})
+
+const filterStatusModel = computed({
+  get: () => filterStatus.value,
+  set: (v: unknown) => {
+    const s = selectToPrimitive(v)
+    if (s === 'active' || s === 'inactive' || s === 'all') filterStatus.value = s
+    else filterStatus.value = 'all'
+  }
+})
+
+const sortByModel = computed({
+  get: () => sortBy.value,
+  set: (v: unknown) => {
+    const s = selectToPrimitive(v)
+    if ((SORT_VALUES as readonly string[]).includes(s ?? '')) sortBy.value = s as typeof sortBy.value
+  }
+})
+
+const loadData = async () => {
+  const gen = ++productFetchGeneration
+  isLoading.value = true
+  errorMessage.value = ''
+  try {
+    const [productRes, categoryRes] = await Promise.all([
+      request<Product[]>(productsListUrl(), { cache: 'no-store' }),
+      request<Category[]>('/products/categories')
+    ])
+    if (gen !== productFetchGeneration) return
+    products.value = productRes.map((row) => {
+      const r = row as Product & { is_active?: unknown; category_id?: string | null }
+      return {
+        ...r,
+        category_id: r.category_id ?? null,
+        is_active: normalizeActiveFlag(r.is_active)
+      }
+    })
+    categories.value = categoryRes
+  } catch (error: unknown) {
+    if (gen !== productFetchGeneration) return
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+    } else {
+      errorMessage.value = (error as { message?: string }).message ?? 'Failed to load products'
+    }
+  } finally {
+    if (gen === productFetchGeneration) isLoading.value = false
+  }
+}
+
+const createCategory = async () => {
+  errorMessage.value = ''
+  try {
+    await request('/products/categories', {
+      method: 'POST',
+      body: {
+        name: categoryForm.name,
+        description: categoryForm.description || undefined
+      }
+    })
+    categoryForm.name = ''
+    categoryForm.description = ''
+    await loadData()
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to create category'
+  }
+}
+
+const resolveCategoryPayload = (raw: string) =>
+  raw === NO_CATEGORY_VALUE || raw.trim() === '' ? undefined : raw.trim()
+
+const createProduct = async () => {
+  errorMessage.value = ''
+  try {
+    const categoryId = resolveCategoryPayload(productForm.categoryId)
+    await request('/products', {
+      method: 'POST',
+      body: {
+        name: productForm.name,
+        sku: productForm.sku,
+        barcode: productForm.barcode,
+        salePrice: Number(productForm.salePrice),
+        costPrice: Number(productForm.costPrice),
+        taxRate: Number(productForm.taxRate),
+        imageUrl: productForm.imageUrl.trim() || undefined,
+        categoryId,
+        isActive: toBooleanStrict(productForm.isActive, true)
+      }
+    })
+    productForm.name = ''
+    productForm.sku = ''
+    productForm.barcode = ''
+    productForm.salePrice = 0
+    productForm.costPrice = 0
+    productForm.taxRate = 0
+    productForm.imageUrl = ''
+    productForm.categoryId = NO_CATEGORY_VALUE
+    productForm.isActive = true
+    if (imageInputRef.value) {
+      imageInputRef.value.value = ''
+    }
+    await loadData()
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to create product'
+  }
+}
+
+const openEditProduct = (product: Product) => {
+  editingProductId.value = product.id
+  editForm.name = product.name
+  editForm.sku = product.sku
+  editForm.barcode = product.barcode
+  editForm.salePrice = Number(product.sale_price)
+  editForm.costPrice = Number(product.cost_price)
+  editForm.taxRate = Number(product.tax_rate)
+  editForm.imageUrl = product.image_url ?? ''
+  editForm.isActive = normalizeActiveFlag(product.is_active)
+  const cid =
+    typeof product.category_id === 'string' && product.category_id.trim().length > 0
+      ? product.category_id.trim()
+      : ''
+  editForm.categoryId =
+    cid || (categories.value.find((category) => category.name === (product.category_name ?? ''))?.id ?? NO_CATEGORY_VALUE)
+  if (editImageInputRef.value) {
+    editImageInputRef.value.value = ''
+  }
+  isEditModalOpen.value = true
+}
+
+const updateProduct = async () => {
+  if (!editingProductId.value) return
+  errorMessage.value = ''
+  try {
+    const categoryIdResolved = resolveCategoryPayload(editForm.categoryId)
+    const body: Record<string, unknown> = {
+      name: editForm.name,
+      sku: editForm.sku,
+      barcode: editForm.barcode,
+      salePrice: Number(editForm.salePrice),
+      costPrice: Number(editForm.costPrice),
+      taxRate: Number(editForm.taxRate),
+      imageUrl: editForm.imageUrl.trim() || undefined,
+      isActive: toBooleanStrict(editForm.isActive, true)
+    }
+    body.categoryId = categoryIdResolved === undefined ? null : categoryIdResolved
+    await request(`/products/${editingProductId.value}`, {
+      method: 'PATCH',
+      body
+    })
+    isEditModalOpen.value = false
+    editingProductId.value = null
+    await loadData()
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to update product'
+  }
+}
+
+const toggleProductActive = async (product: Product) => {
+  if (!canManageProducts.value) return
+  togglingProductId.value = product.id
+  errorMessage.value = ''
+  try {
+    const next = !normalizeActiveFlag(product.is_active)
+    await request(`/products/${product.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: { isActive: next }
+    })
+    await loadData()
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to update product status'
+  } finally {
+    togglingProductId.value = null
+  }
+}
+
+/** Run product fetch after filter controls settle (typing search, selects). */
+const scheduleProductReload = () => {
+  if (productFilterDebounce) clearTimeout(productFilterDebounce)
+  productFilterDebounce = setTimeout(() => {
+    productFilterDebounce = null
+    void loadData()
+  }, 320)
+}
+
+const reloadProductsNow = () => {
+  if (productFilterDebounce) {
+    clearTimeout(productFilterDebounce)
+    productFilterDebounce = null
+  }
+  void loadData()
+}
+
+watch(
+  [query, filterCategoryId, filterStatus, filterMinSale, filterMaxSale, sortBy],
+  () => {
+    scheduleProductReload()
+  }
+)
+
+onMounted(async () => {
+  await refreshUserProfile()
+  await loadData()
+})
+</script>
+
+<template>
+  <section class="space-y-6">
+    <UAlert
+      v-if="errorMessage"
+      color="error"
+      variant="soft"
+      :description="errorMessage"
+      icon="i-lucide-triangle-alert"
+    />
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <UCard>
+        <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Create Category</h2>
+        <div class="grid gap-3">
+          <UInput v-model="categoryForm.name" placeholder="Category name" />
+          <UTextarea v-model="categoryForm.description" placeholder="Optional description" />
+          <UButton icon="i-lucide-plus" @click="createCategory">Save Category</UButton>
+        </div>
+      </UCard>
+
+      <UCard>
+        <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Create Product</h2>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <UInput v-model="productForm.name" placeholder="Product name" class="sm:col-span-2" />
+          <UInput v-model="productForm.sku" placeholder="SKU" />
+          <UInput v-model="productForm.barcode" placeholder="Barcode" />
+          <UInput v-model.number="productForm.salePrice" type="number" placeholder="Sale price" />
+          <UInput v-model.number="productForm.costPrice" type="number" placeholder="Cost price" />
+          <UInput v-model.number="productForm.taxRate" type="number" placeholder="Tax %" />
+          <div class="sm:col-span-2 grid gap-2">
+            <label class="text-xs font-medium text-slate-500">Product image (optional)</label>
+            <input
+              ref="imageInputRef"
+              type="file"
+              accept="image/*"
+              class="block w-full rounded-lg border border-slate-200 bg-white p-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              @change="onProductImageSelected"
+            />
+            <div class="flex items-center gap-3">
+              <img
+                :src="selectedImagePreview || 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2764%27 height=%2764%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 fill=%27%23e2e8f0%27/%3E%3Cpath d=%27M16 22h32v20H16z%27 fill=%27%2394a3b8%27/%3E%3Ccircle cx=%2726%27 cy=%2730%27 r=%273%27 fill=%27%23e2e8f0%27/%3E%3Cpath d=%27M20 42l8-7 5 4 7-6 8 9z%27 fill=%27%23cbd5e1%27/%3E%3C/svg%3E'"
+                alt="Selected product image"
+                class="h-12 w-12 rounded object-cover"
+              />
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="xs"
+                icon="i-lucide-x"
+                :disabled="!productForm.imageUrl"
+                @click="clearSelectedImage"
+              >
+                Remove image
+              </UButton>
+            </div>
+          </div>
+          <USelect v-model="productCategorySelectModel" :items="categorySelectItems" placeholder="Category" />
+          <div class="sm:col-span-2">
+            <UCheckbox v-model="productActiveCheckModel" name="product-active" label="Active (available on POS / billing)" />
+          </div>
+          <UButton class="sm:col-span-2" icon="i-lucide-package-plus" @click="createProduct">Save Product</UButton>
+        </div>
+      </UCard>
+    </div>
+
+    <UCard v-if="canManageProducts">
+      <h2 class="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-100">Import products from Excel</h2>
+      <p class="mb-3 text-sm text-slate-600 dark:text-slate-400">
+        First sheet: put headers in row 1 — for example
+        <span class="font-medium text-slate-800 dark:text-slate-200">Category</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">Product name</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">SKU</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">Barcode</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">Sale price</span>,
+        and optionally Cost price / Tax %. Parsed rows appear below; only rows without errors are imported.
+      </p>
+      <div class="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          ref="excelInputRef"
+          type="file"
+          accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          class="block max-w-full rounded-lg border border-slate-200 bg-white p-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          :disabled="importParsing"
+          @change="onExcelFileSelected"
+        />
+        <UButton
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-x"
+          :disabled="!importPreviewRows.length && !importPreviewMeta"
+          @click="clearExcelImportPreview"
+        >
+          Clear preview
+        </UButton>
+      </div>
+      <p v-if="importPreviewMeta" class="mb-2 text-xs text-slate-500">
+        {{ importPreviewMeta.fileName }} — {{ importPreviewMeta.rowCount }} row(s) parsed · {{ validExcelRowCount }} ready to import
+      </p>
+      <div v-if="importPreviewRows.length" class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+        <table class="min-w-full text-left text-sm">
+          <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <tr>
+              <th class="px-3 py-2">#</th>
+              <th class="px-3 py-2">Category</th>
+              <th class="px-3 py-2">Product</th>
+              <th class="px-3 py-2">SKU</th>
+              <th class="px-3 py-2">Barcode</th>
+              <th class="px-3 py-2">Sale</th>
+              <th class="px-3 py-2">Cost</th>
+              <th class="px-3 py-2">Tax %</th>
+              <th class="px-3 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in importPreviewRows"
+              :key="row.rowNumber"
+              class="border-b border-slate-100 dark:border-slate-800"
+              :class="{ 'bg-red-50/80 dark:bg-red-950/20': row.issues.length > 0 }"
+            >
+              <td class="px-3 py-2 text-slate-500">{{ row.rowNumber }}</td>
+              <td class="px-3 py-2">{{ row.categoryName || '—' }}</td>
+              <td class="px-3 py-2 font-medium">{{ row.name }}</td>
+              <td class="px-3 py-2">{{ row.sku }}</td>
+              <td class="px-3 py-2">{{ row.barcode }}</td>
+              <td class="px-3 py-2">PKR {{ Number(row.salePrice).toLocaleString() }}</td>
+              <td class="px-3 py-2">PKR {{ Number(row.costPrice).toLocaleString() }}</td>
+              <td class="px-3 py-2">{{ row.taxRate }}</td>
+              <td class="px-3 py-2">
+                <UBadge v-if="row.issues.length === 0" color="success" variant="soft">OK</UBadge>
+                <span v-else class="text-xs text-red-700 dark:text-red-300">{{ row.issues.join('; ') }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="importPreviewRows.length" class="mt-3 flex flex-wrap gap-2">
+        <UButton
+          icon="i-lucide-upload-cloud"
+          :loading="importApplying"
+          :disabled="validExcelRowCount === 0"
+          @click="applyExcelImport"
+        >
+          Import {{ validExcelRowCount }} valid row(s)
+        </UButton>
+      </div>
+    </UCard>
+
+    <UCard>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Products</h2>
+        <div class="flex flex-wrap gap-2">
+          <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" :loading="isLoading" @click="reloadProductsNow">
+            Refresh
+          </UButton>
+        </div>
+      </div>
+
+      <div class="mb-4 grid gap-3 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <UInput v-model="query" icon="i-lucide-search" placeholder="Search name / SKU / barcode" class="min-w-0 xl:col-span-2" />
+        <USelect v-model="filterCategoryIdModel" :items="filterCategoryItems" placeholder="Category" class="min-w-0" />
+        <USelect v-model="filterStatusModel" :items="statusFilterItems" placeholder="Status" class="min-w-0" />
+        <UInput v-model="filterMinSale" type="number" placeholder="Min sale (PKR)" class="min-w-0" />
+        <UInput v-model="filterMaxSale" type="number" placeholder="Max sale (PKR)" class="min-w-0" />
+        <USelect v-model="sortByModel" :items="sortSelectItems" placeholder="Sort" class="min-w-0" />
+      </div>
+      <div class="mb-4 flex flex-wrap gap-2">
+        <UButton icon="i-lucide-filter" :loading="isLoading" @click="reloadProductsNow">Apply filters</UButton>
+        <UButton color="neutral" variant="outline" icon="i-lucide-x" @click="clearFilters(); reloadProductsNow()">
+          Clear filters
+        </UButton>
+      </div>
+
+      <div class="overflow-auto">
+        <table class="min-w-full text-left text-sm">
+          <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <tr>
+              <th class="px-3 py-2">Name</th>
+              <th class="px-3 py-2">Image</th>
+              <th class="px-3 py-2">SKU</th>
+              <th class="px-3 py-2">Barcode</th>
+              <th class="px-3 py-2">Category</th>
+              <th class="px-3 py-2">Sale</th>
+              <th class="px-3 py-2">Tax %</th>
+              <th class="px-3 py-2">Status</th>
+              <th class="px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="product in products"
+              :key="product.id"
+              class="border-b border-slate-100 dark:border-slate-800"
+              :class="{ 'bg-slate-50/90 dark:bg-slate-950/40': !product.is_active }"
+            >
+              <td class="px-3 py-2 font-medium">{{ product.name }}</td>
+              <td class="px-3 py-2">
+                <img
+                  v-if="product.image_url"
+                  :src="product.image_url"
+                  alt="Product"
+                  class="h-10 w-10 rounded object-cover"
+                />
+                <span v-else class="text-slate-400">-</span>
+              </td>
+              <td class="px-3 py-2">{{ product.sku }}</td>
+              <td class="px-3 py-2">{{ product.barcode }}</td>
+              <td class="px-3 py-2">{{ product.category_name || '-' }}</td>
+              <td class="px-3 py-2">PKR {{ Number(product.sale_price).toLocaleString() }}</td>
+              <td class="px-3 py-2">{{ product.tax_rate }}</td>
+              <td class="px-3 py-2">
+                <UBadge :color="product.is_active ? 'success' : 'neutral'" variant="soft">
+                  {{ product.is_active ? 'Enabled' : 'Disabled' }}
+                </UBadge>
+              </td>
+              <td class="px-3 py-2">
+                <div class="flex flex-wrap items-center gap-1">
+                  <UButton
+                    v-if="canManageProducts"
+                    size="xs"
+                    color="neutral"
+                    variant="soft"
+                    icon="i-lucide-power"
+                    :loading="togglingProductId === product.id"
+                    @click="toggleProductActive(product)"
+                  >
+                    {{ product.is_active ? 'Disable' : 'Enable' }}
+                  </UButton>
+                  <UButton size="xs" color="neutral" variant="soft" icon="i-lucide-pencil" @click="openEditProduct(product)">
+                    Edit
+                  </UButton>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!products.length">
+              <td class="px-3 py-4 text-slate-500" colspan="9">No products found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </UCard>
+
+    <div
+      v-if="isEditModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      @click.self="isEditModalOpen = false"
+    >
+      <div class="w-full max-w-2xl rounded-xl bg-white p-4 shadow-2xl dark:bg-slate-900">
+        <h3 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Edit Product</h3>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <UInput v-model="editForm.name" placeholder="Product name" class="sm:col-span-2" />
+          <UInput v-model="editForm.sku" placeholder="SKU" />
+          <UInput v-model="editForm.barcode" placeholder="Barcode" />
+          <UInput v-model.number="editForm.salePrice" type="number" placeholder="Sale price" />
+          <UInput v-model.number="editForm.costPrice" type="number" placeholder="Cost price" />
+          <UInput v-model.number="editForm.taxRate" type="number" placeholder="Tax %" />
+          <USelect v-model="editCategorySelectModel" :items="categorySelectItems" placeholder="Category" />
+
+          <div class="sm:col-span-2">
+            <UCheckbox v-model="editActiveCheckModel" name="edit-product-active" label="Active (available on POS / billing)" />
+          </div>
+
+          <div class="sm:col-span-2 grid gap-2">
+            <label class="text-xs font-medium text-slate-500">Product image (optional)</label>
+            <input
+              ref="editImageInputRef"
+              type="file"
+              accept="image/*"
+              class="block w-full rounded-lg border border-slate-200 bg-white p-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              @change="onEditProductImageSelected"
+            />
+            <div class="flex items-center gap-3">
+              <img
+                :src="editImagePreview || 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2764%27 height=%2764%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 fill=%27%23e2e8f0%27/%3E%3Cpath d=%27M16 22h32v20H16z%27 fill=%27%2394a3b8%27/%3E%3Ccircle cx=%2726%27 cy=%2730%27 r=%273%27 fill=%27%23e2e8f0%27/%3E%3Cpath d=%27M20 42l8-7 5 4 7-6 8 9z%27 fill=%27%23cbd5e1%27/%3E%3C/svg%3E'"
+                alt="Edit product image"
+                class="h-12 w-12 rounded object-cover"
+              />
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="xs"
+                icon="i-lucide-x"
+                :disabled="!editForm.imageUrl"
+                @click="clearEditImage"
+              >
+                Remove image
+              </UButton>
+            </div>
+          </div>
+
+          <div class="sm:col-span-2 mt-2 flex justify-end gap-2">
+            <UButton color="neutral" variant="soft" @click="isEditModalOpen = false">Cancel</UButton>
+            <UButton icon="i-lucide-save" @click="updateProduct">Update Product</UButton>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
