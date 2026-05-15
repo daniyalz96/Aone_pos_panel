@@ -4,6 +4,7 @@ import { joinURL, withQuery } from 'ufo'
 import { ApiError, useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { useRuntimeConfig } from '#imports'
+import DepartmentCreateForm from '~/components/DepartmentCreateForm.vue'
 
 const SORT_VALUES = ['created_desc', 'created_asc', 'name_asc', 'name_desc', 'sale_asc', 'sale_desc'] as const
 
@@ -48,7 +49,14 @@ function toBooleanStrict(v: unknown, fallback = true): boolean {
   return Boolean(v)
 }
 
-type Category = { id: string; name: string }
+type Department = { id: string; name: string }
+type Category = {
+  id: string
+  name: string
+  description?: string | null
+  department_id?: string | null
+  department_name?: string | null
+}
 type Product = {
   id: string
   name: string
@@ -87,6 +95,10 @@ const { user, token, setAuth } = useAuth()
 const config = useRuntimeConfig()
 const NO_CATEGORY_VALUE = '__none__'
 const FILTER_ALL_CATEGORIES = '__all_categories__'
+/** Create-category flow: user must pick a real department from the list. */
+const PICK_DEPARTMENT_VALUE = '__pick_department__'
+/** Edit-category flow: optional unassigned department. */
+const NO_DEPARTMENT_VALUE = '__no_department__'
 
 /** Align with backend: permission or admin/manager role. */
 const canManageProducts = computed(() => {
@@ -130,6 +142,7 @@ const isLoading = ref(false)
 const errorMessage = ref('')
 const products = ref<Product[]>([])
 const categories = ref<Category[]>([])
+const departments = ref<Department[]>([])
 const query = ref('')
 const filterCategoryId = ref(FILTER_ALL_CATEGORIES)
 const filterStatus = ref<'all' | 'active' | 'inactive'>('all')
@@ -154,7 +167,16 @@ const productForm = reactive({
 
 const categoryForm = reactive({
   name: '',
-  description: ''
+  description: '',
+  departmentId: PICK_DEPARTMENT_VALUE as string
+})
+
+const isCategoryEditModalOpen = ref(false)
+const editCategoryForm = reactive({
+  id: '' as string,
+  name: '',
+  description: '',
+  departmentId: NO_DEPARTMENT_VALUE as string
 })
 
 const imageInputRef = ref<HTMLInputElement | null>(null)
@@ -180,11 +202,14 @@ const editForm = reactive({
   isActive: true
 })
 
+const categoryLabel = (category: Category) =>
+  category.department_name ? `${category.name} (${category.department_name})` : category.name
+
 const filterCategoryItems = computed(() => [
   { label: 'All categories', value: FILTER_ALL_CATEGORIES },
   ...categories.value
     .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
-    .map((category) => ({ label: category.name, value: category.id }))
+    .map((category) => ({ label: categoryLabel(category), value: category.id }))
 ])
 
 const statusFilterItems = [
@@ -206,8 +231,36 @@ const categorySelectItems = computed(() => [
   { label: 'No category', value: NO_CATEGORY_VALUE },
   ...categories.value
     .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
-    .map((category) => ({ label: category.name, value: category.id }))
+    .map((category) => ({ label: categoryLabel(category), value: category.id }))
 ])
+
+const categoryDepartmentCreateItems = computed(() => [
+  { label: 'Select department…', value: PICK_DEPARTMENT_VALUE },
+  ...departments.value
+    .filter((d) => typeof d.id === 'string' && d.id.trim().length > 0)
+    .map((d) => ({ label: d.name, value: d.id }))
+])
+
+const categoryDepartmentEditItems = computed(() => [
+  { label: 'No department', value: NO_DEPARTMENT_VALUE },
+  ...departments.value
+    .filter((d) => typeof d.id === 'string' && d.id.trim().length > 0)
+    .map((d) => ({ label: d.name, value: d.id }))
+])
+
+const categoryDepartmentCreateSelectModel = computed({
+  get: () => categoryForm.departmentId,
+  set: (v: unknown) => {
+    categoryForm.departmentId = (selectToPrimitive(v) ?? PICK_DEPARTMENT_VALUE) as typeof categoryForm.departmentId
+  }
+})
+
+const editCategoryDepartmentSelectModel = computed({
+  get: () => editCategoryForm.departmentId,
+  set: (v: unknown) => {
+    editCategoryForm.departmentId = (selectToPrimitive(v) ?? NO_DEPARTMENT_VALUE) as typeof editCategoryForm.departmentId
+  }
+})
 
 const selectedImagePreview = computed(() => productForm.imageUrl || '')
 const editImagePreview = computed(() => editForm.imageUrl || '')
@@ -490,9 +543,10 @@ const loadData = async () => {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [productRes, categoryRes] = await Promise.all([
+    const [productRes, categoryRes, departmentRes] = await Promise.all([
       request<Product[]>(productsListUrl(), { cache: 'no-store' }),
-      request<Category[]>('/products/categories')
+      request<Category[]>('/products/categories'),
+      request<Department[]>('/products/departments')
     ])
     if (gen !== productFetchGeneration) return
     products.value = productRes.map((row) => {
@@ -504,6 +558,7 @@ const loadData = async () => {
       }
     })
     categories.value = categoryRes
+    departments.value = departmentRes
   } catch (error: unknown) {
     if (gen !== productFetchGeneration) return
     if (error instanceof ApiError) {
@@ -516,21 +571,77 @@ const loadData = async () => {
   }
 }
 
+const resolveDepartmentIdForCreate = (): string | undefined => {
+  const raw = selectToPrimitive(categoryForm.departmentId)
+  if (!raw || raw === PICK_DEPARTMENT_VALUE) return undefined
+  return raw
+}
+
+const resolveDepartmentIdForPatch = (raw: string): string | null | undefined => {
+  const v = selectToPrimitive(raw)
+  if (v === undefined || v === NO_DEPARTMENT_VALUE) return null
+  return v
+}
+
 const createCategory = async () => {
+  if (!canManageProducts.value) return
   errorMessage.value = ''
+  const deptId = resolveDepartmentIdForCreate()
+  if (!deptId) {
+    errorMessage.value =
+      departments.value.length === 0
+        ? 'Create at least one department before adding categories.'
+        : 'Select a department for this category.'
+    return
+  }
   try {
     await request('/products/categories', {
       method: 'POST',
       body: {
         name: categoryForm.name,
-        description: categoryForm.description || undefined
+        description: categoryForm.description || undefined,
+        departmentId: deptId
       }
     })
     categoryForm.name = ''
     categoryForm.description = ''
+    categoryForm.departmentId = PICK_DEPARTMENT_VALUE
     await loadData()
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Failed to create category'
+  }
+}
+
+const openEditCategory = (category: Category) => {
+  editCategoryForm.id = category.id
+  editCategoryForm.name = category.name
+  editCategoryForm.description = category.description ?? ''
+  const did =
+    typeof category.department_id === 'string' && category.department_id.trim().length > 0
+      ? category.department_id.trim()
+      : ''
+  editCategoryForm.departmentId = did || NO_DEPARTMENT_VALUE
+  isCategoryEditModalOpen.value = true
+}
+
+const updateCategory = async () => {
+  if (!canManageProducts.value || !editCategoryForm.id) return
+  errorMessage.value = ''
+  try {
+    const departmentId = resolveDepartmentIdForPatch(editCategoryForm.departmentId)
+    await request(`/products/categories/${editCategoryForm.id}`, {
+      method: 'PATCH',
+      body: {
+        name: editCategoryForm.name,
+        description: editCategoryForm.description.trim() === '' ? null : editCategoryForm.description,
+        departmentId
+      }
+    })
+    isCategoryEditModalOpen.value = false
+    editCategoryForm.id = ''
+    await loadData()
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to update category'
   }
 }
 
@@ -682,13 +793,33 @@ onMounted(async () => {
       icon="i-lucide-triangle-alert"
     />
 
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="grid gap-4 xl:grid-cols-3">
+      <DepartmentCreateForm :can-manage="canManageProducts" @created="reloadProductsNow" />
+
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Create Category</h2>
+        <p class="mb-3 text-sm text-slate-600 dark:text-slate-400">
+          Every category is stored under one department. Create a department first if the list is empty.
+        </p>
         <div class="grid gap-3">
           <UInput v-model="categoryForm.name" placeholder="Category name" />
           <UTextarea v-model="categoryForm.description" placeholder="Optional description" />
-          <UButton icon="i-lucide-plus" @click="createCategory">Save Category</UButton>
+          <div class="grid gap-1">
+            <label class="text-xs font-medium text-slate-600 dark:text-slate-400">Department</label>
+            <USelect
+              v-model="categoryDepartmentCreateSelectModel"
+              :items="categoryDepartmentCreateItems"
+              placeholder="Department"
+              :disabled="!departments.length"
+            />
+          </div>
+          <UButton
+            icon="i-lucide-plus"
+            :disabled="!canManageProducts || !departments.length"
+            @click="createCategory"
+          >
+            Save Category
+          </UButton>
         </div>
       </UCard>
 
@@ -736,6 +867,54 @@ onMounted(async () => {
         </div>
       </UCard>
     </div>
+
+    <UCard>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Categories</h2>
+        <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" size="sm" :loading="isLoading" @click="reloadProductsNow">
+          Refresh
+        </UButton>
+      </div>
+      <div class="overflow-auto">
+        <table class="min-w-full text-left text-sm">
+          <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <tr>
+              <th class="px-3 py-2">Name</th>
+              <th class="px-3 py-2">Department</th>
+              <th class="px-3 py-2">Description</th>
+              <th class="px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="cat in categories"
+              :key="cat.id"
+              class="border-b border-slate-100 dark:border-slate-800"
+            >
+              <td class="px-3 py-2 font-medium">{{ cat.name }}</td>
+              <td class="px-3 py-2">{{ cat.department_name || '—' }}</td>
+              <td class="max-w-xs truncate px-3 py-2 text-slate-600 dark:text-slate-400">{{ cat.description || '—' }}</td>
+              <td class="px-3 py-2">
+                <UButton
+                  v-if="canManageProducts"
+                  size="xs"
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-pencil"
+                  @click="openEditCategory(cat)"
+                >
+                  Edit
+                </UButton>
+                <span v-else class="text-slate-400">—</span>
+              </td>
+            </tr>
+            <tr v-if="!categories.length">
+              <td class="px-3 py-4 text-slate-500" colspan="4">No categories yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </UCard>
 
     <UCard v-if="canManageProducts">
       <h2 class="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-100">Import products from Excel</h2>
@@ -915,28 +1094,84 @@ onMounted(async () => {
     </UCard>
 
     <div
+      v-if="isCategoryEditModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      @click.self="isCategoryEditModalOpen = false"
+    >
+      <div class="w-full max-w-lg rounded-xl bg-white p-4 shadow-2xl dark:bg-slate-900">
+        <h3 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Edit Category</h3>
+        <div class="grid gap-4">
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-cat-edit-name">Category name</label>
+            <UInput id="prd-cat-edit-name" v-model="editCategoryForm.name" class="w-full" placeholder="Category name" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-cat-edit-desc">Description</label>
+            <UTextarea id="prd-cat-edit-desc" v-model="editCategoryForm.description" class="w-full" placeholder="Optional description" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-cat-edit-dept">Department</label>
+            <USelect
+              id="prd-cat-edit-dept"
+              v-model="editCategoryDepartmentSelectModel"
+              class="w-full"
+              :items="categoryDepartmentEditItems"
+              placeholder="Department"
+            />
+          </div>
+          <div class="mt-2 flex justify-end gap-2">
+            <UButton color="neutral" variant="soft" @click="isCategoryEditModalOpen = false">Cancel</UButton>
+            <UButton icon="i-lucide-save" @click="updateCategory">Update Category</UButton>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="isEditModalOpen"
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       @click.self="isEditModalOpen = false"
     >
       <div class="w-full max-w-2xl rounded-xl bg-white p-4 shadow-2xl dark:bg-slate-900">
         <h3 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Edit Product</h3>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <UInput v-model="editForm.name" placeholder="Product name" class="sm:col-span-2" />
-          <UInput v-model="editForm.sku" placeholder="SKU" />
-          <UInput v-model="editForm.barcode" placeholder="Barcode" />
-          <UInput v-model.number="editForm.salePrice" type="number" placeholder="Sale price" />
-          <UInput v-model.number="editForm.costPrice" type="number" placeholder="Cost price" />
-          <UInput v-model.number="editForm.taxRate" type="number" placeholder="Tax %" />
-          <USelect v-model="editCategorySelectModel" :items="categorySelectItems" placeholder="Category" />
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-name">Product name</label>
+            <UInput id="prd-edit-name" v-model="editForm.name" class="w-full" placeholder="Product name" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-sku">SKU</label>
+            <UInput id="prd-edit-sku" v-model="editForm.sku" class="w-full" placeholder="SKU" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-barcode">Barcode</label>
+            <UInput id="prd-edit-barcode" v-model="editForm.barcode" class="w-full" placeholder="Barcode" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-sale">Sale price</label>
+            <UInput id="prd-edit-sale" v-model.number="editForm.salePrice" class="w-full" type="number" placeholder="0.00" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-cost">Cost price</label>
+            <UInput id="prd-edit-cost" v-model.number="editForm.costPrice" class="w-full" type="number" placeholder="0.00" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-tax">Tax %</label>
+            <UInput id="prd-edit-tax" v-model.number="editForm.taxRate" class="w-full" type="number" placeholder="0" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-category">Category</label>
+            <USelect id="prd-edit-category" v-model="editCategorySelectModel" class="w-full" :items="categorySelectItems" placeholder="Category" />
+          </div>
 
           <div class="sm:col-span-2">
             <UCheckbox v-model="editActiveCheckModel" name="edit-product-active" label="Active (available on POS / billing)" />
           </div>
 
-          <div class="sm:col-span-2 grid gap-2">
-            <label class="text-xs font-medium text-slate-500">Product image (optional)</label>
+          <div class="sm:col-span-2 flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-image">Product image (optional)</label>
             <input
+              id="prd-edit-image"
               ref="editImageInputRef"
               type="file"
               accept="image/*"

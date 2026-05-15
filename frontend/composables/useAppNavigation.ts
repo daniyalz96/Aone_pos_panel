@@ -14,6 +14,9 @@ const allLinks: AppLink[] = [
   { label: 'Billing POS', icon: 'i-lucide-receipt', to: '/pos' },
   { label: 'Products', icon: 'i-lucide-package', to: '/products' },
   { label: 'Inventory', icon: 'i-lucide-boxes', to: '/inventory' },
+  { label: 'Suppliers', icon: 'i-lucide-truck', to: '/suppliers' },
+  { label: 'Purchases', icon: 'i-lucide-file-input', to: '/purchases' },
+  { label: 'Purchase returns', icon: 'i-lucide-package-minus', to: '/purchase-returns' },
   { label: 'Customers', icon: 'i-lucide-users', to: '/customers' },
   { label: 'Reports', icon: 'i-lucide-chart-column-big', to: '/reports' },
   {

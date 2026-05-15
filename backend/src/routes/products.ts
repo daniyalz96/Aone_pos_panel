@@ -62,6 +62,8 @@ const patchProductBodySchema = z.object({
 const listProductsQuerySchema = z.object({
   q: z.string().optional(),
   categoryId: z.string().uuid().optional(),
+  /** When set, only products linked to this supplier (supplier_products) are returned. */
+  supplierId: z.string().uuid().optional(),
   isActive: z.enum(["true", "false"]).optional(),
   minSalePrice: z.coerce.number().nonnegative().optional(),
   maxSalePrice: z.coerce.number().nonnegative().optional(),
@@ -90,6 +92,10 @@ function normalizeListQuery(query: Record<string, unknown>): Record<string, unkn
     out.categoryId = out.category_id;
   }
   delete out.category_id;
+  if (!out.supplierId && out.supplier_id) {
+    out.supplierId = out.supplier_id;
+  }
+  delete out.supplier_id;
 
   /**
    * Resolve status filter once: prefer `isActive`, else `is_active`. Drop both first so duplicate
@@ -137,6 +143,13 @@ router.get("/", requireAuth, async (req, res) => {
     params.push(filters.categoryId);
     i += 1;
   }
+  if (filters.supplierId) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM supplier_products sp WHERE sp.product_id = p.id AND sp.supplier_id = $${i}::uuid)`,
+    );
+    params.push(filters.supplierId);
+    i += 1;
+  }
   if (filters.isActive === "true") {
     conditions.push(`p.is_active = TRUE`);
   } else if (filters.isActive === "false") {
@@ -170,9 +183,13 @@ router.get("/", requireAuth, async (req, res) => {
 
   const result = await pool.query(
     `
-      SELECT p.*, c.name AS category_name
+      SELECT
+        p.*,
+        c.name AS category_name,
+        COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
       FROM products p
       LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN inventory_balances ib ON ib.product_id = p.id
       ${whereClause}
       ORDER BY ${orderBy}
       LIMIT ${limitParam}
@@ -201,9 +218,11 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           c.name AS category_name,
           p.image_url,
           p.tax_rate,
-          FALSE AS is_variant
+          FALSE AS is_variant,
+          COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
         FROM products p
         LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN inventory_balances ib ON ib.product_id = p.id
         WHERE p.is_active = TRUE
           AND (p.barcode = $1 OR p.sku = $1)
         LIMIT 20
@@ -220,10 +239,12 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           c.name AS category_name,
           p.image_url,
           p.tax_rate,
-          TRUE AS is_variant
+          TRUE AS is_variant,
+          COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
         FROM product_variants pv
         JOIN products p ON p.id = pv.product_id
         LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN inventory_balances ib ON ib.product_id = p.id
         WHERE pv.is_active = TRUE
           AND (
             pv.barcode = $1
@@ -250,9 +271,11 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           c.name AS category_name,
           p.image_url,
           p.tax_rate,
-          FALSE AS is_variant
+          FALSE AS is_variant,
+          COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
         FROM products p
         LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN inventory_balances ib ON ib.product_id = p.id
         WHERE p.is_active = TRUE
           AND (p.name ILIKE $1 OR p.sku ILIKE $1 OR p.barcode ILIKE $1)
         ORDER BY p.name ASC
@@ -266,17 +289,16 @@ router.get("/search/billing", requireAuth, async (req, res) => {
   return res.json(rows.rows);
 });
 
-router.get("/categories", requireAuth, async (_req, res) => {
+router.get("/departments", requireAuth, async (_req, res) => {
   const result = await pool.query(
-    `SELECT * FROM categories WHERE is_active = TRUE ORDER BY name ASC`,
+    `SELECT * FROM departments WHERE is_active = TRUE ORDER BY name ASC`,
   );
   return res.json(result.rows);
 });
 
-router.post("/categories", requireAuth, requireInventoryManagement, async (req, res) => {
+router.post("/departments", requireAuth, requireInventoryManagement, async (req, res) => {
   const schema = z.object({
-    name: z.string().min(2).max(100),
-    description: z.string().max(300).optional(),
+    name: z.string().min(1).max(120).trim(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -285,14 +307,142 @@ router.post("/categories", requireAuth, requireInventoryManagement, async (req, 
 
   const inserted = await pool.query(
     `
-      INSERT INTO categories (name, description, is_active)
-      VALUES ($1, $2, TRUE)
+      INSERT INTO departments (name, is_active)
+      VALUES ($1, TRUE)
       RETURNING *
     `,
-    [parsed.data.name, parsed.data.description ?? null],
+    [parsed.data.name],
   );
 
   return res.status(201).json(inserted.rows[0]);
+});
+
+router.get("/categories", requireAuth, async (_req, res) => {
+  const result = await pool.query(
+    `
+      SELECT
+        c.*,
+        d.name AS department_name
+      FROM categories c
+      LEFT JOIN departments d ON d.id = c.department_id
+      WHERE c.is_active = TRUE
+      ORDER BY c.name ASC
+    `,
+  );
+  return res.json(result.rows);
+});
+
+router.post("/categories", requireAuth, requireInventoryManagement, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(2).max(100),
+    description: z.string().max(300).optional(),
+    departmentId: z.string().uuid().optional().nullable(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
+  }
+
+  if (parsed.data.departmentId) {
+    const dept = await pool.query(`SELECT id FROM departments WHERE id = $1 AND is_active = TRUE`, [
+      parsed.data.departmentId,
+    ]);
+    if (dept.rowCount === 0) {
+      return res.status(400).json({ message: "Department not found or inactive" });
+    }
+  }
+
+  const inserted = await pool.query(
+    `
+      INSERT INTO categories (name, description, is_active, department_id)
+      VALUES ($1, $2, TRUE, $3)
+      RETURNING *
+    `,
+    [parsed.data.name, parsed.data.description ?? null, parsed.data.departmentId ?? null],
+  );
+
+  const withDept = await pool.query(
+    `
+      SELECT c.*, d.name AS department_name
+      FROM categories c
+      LEFT JOIN departments d ON d.id = c.department_id
+      WHERE c.id = $1
+    `,
+    [inserted.rows[0].id],
+  );
+
+  return res.status(201).json(withDept.rows[0]);
+});
+
+router.patch("/categories/:id", requireAuth, requireInventoryManagement, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(2).max(100).optional(),
+    description: z.string().max(300).optional().nullable(),
+    departmentId: z.string().uuid().optional().nullable(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
+  }
+
+  const current = await pool.query(`SELECT * FROM categories WHERE id = $1`, [req.params.id]);
+  if (current.rowCount === 0) {
+    return res.status(404).json({ message: "Category not found" });
+  }
+
+  const payload = parsed.data;
+  if (payload.departmentId) {
+    const dept = await pool.query(`SELECT id FROM departments WHERE id = $1 AND is_active = TRUE`, [
+      payload.departmentId,
+    ]);
+    if (dept.rowCount === 0) {
+      return res.status(400).json({ message: "Department not found or inactive" });
+    }
+  }
+
+  const assignments: string[] = [];
+  const values: unknown[] = [];
+  let p = 1;
+
+  const push = (sqlFragment: string, val: unknown) => {
+    assignments.push(`${sqlFragment} $${p}`);
+    values.push(val);
+    p += 1;
+  };
+
+  if (payload.name !== undefined) push("name =", payload.name);
+  if (payload.description !== undefined) push("description =", payload.description);
+  if (payload.departmentId !== undefined) push("department_id =", payload.departmentId);
+
+  if (assignments.length === 0) {
+    return res.status(400).json({
+      message: "No fields to update. Send at least one of: name, description, departmentId.",
+    });
+  }
+
+  values.push(req.params.id);
+  const idPlaceholder = `$${p}`;
+
+  await pool.query(
+    `
+      UPDATE categories
+      SET ${assignments.join(", ")}, updated_at = NOW()
+      WHERE id = ${idPlaceholder}
+    `,
+    values,
+  );
+
+  const refreshed = await pool.query(
+    `
+      SELECT c.*, d.name AS department_name
+      FROM categories c
+      LEFT JOIN departments d ON d.id = c.department_id
+      WHERE c.id = $1
+    `,
+    [req.params.id],
+  );
+
+  return res.json(refreshed.rows[0]);
 });
 
 router.post("/", requireAuth, requireInventoryManagement, async (req, res) => {

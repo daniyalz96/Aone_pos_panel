@@ -10,6 +10,7 @@ type Product = {
   sale_price: number
   category_name: string | null
   image_url?: string | null
+  qty_on_hand?: number | string | null
 }
 
 type ProductResult = {
@@ -19,6 +20,8 @@ type ProductResult = {
   sale_price: number
   category: string
   image_url?: string | null
+  /** On-hand stock from inventory_balances (same for base product and variants). */
+  qty_on_hand: number
 }
 
 type Category = {
@@ -53,6 +56,7 @@ const selectedCategory = ref('All')
 const categories = ref<string[]>(['All'])
 const productCategoryMap = ref<Record<string, string>>({})
 const productImageMap = ref<Record<string, string | null>>({})
+const productQtyMap = ref<Record<string, number>>({})
 const baseProducts = ref<ProductResult[]>([])
 const searchResults = ref<ProductResult[]>([])
 
@@ -97,6 +101,22 @@ const clearError = () => {
   errorMessage.value = ''
 }
 
+const parseStockQty = (raw: unknown, productId: string): number => {
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : 0
+  }
+  const fromMap = productQtyMap.value[productId]
+  return typeof fromMap === 'number' && Number.isFinite(fromMap) ? fromMap : 0
+}
+
+const formatStockQty = (qty: number) => {
+  if (!Number.isFinite(qty)) return '0'
+  const rounded = Math.round(qty * 1000) / 1000
+  if (Number.isInteger(rounded)) return String(rounded)
+  return rounded.toLocaleString(undefined, { maximumFractionDigits: 3 })
+}
+
 const mapProductRow = (row: {
   product_id: string
   display_name: string
@@ -104,13 +124,15 @@ const mapProductRow = (row: {
   sale_price: number
   category_name?: string | null
   image_url?: string | null
+  qty_on_hand?: unknown
 }) => ({
   product_id: row.product_id,
   display_name: row.display_name,
   sku: row.sku,
   sale_price: Number(row.sale_price),
   category: row.category_name ?? productCategoryMap.value[row.product_id] ?? 'Uncategorized',
-  image_url: row.image_url ?? productImageMap.value[row.product_id] ?? null
+  image_url: row.image_url ?? productImageMap.value[row.product_id] ?? null,
+  qty_on_hand: parseStockQty(row.qty_on_hand, row.product_id)
 })
 
 const loadProducts = async () => {
@@ -124,7 +146,8 @@ const loadProducts = async () => {
       sku: product.sku,
       sale_price: Number(product.sale_price),
       category: product.category_name ?? 'Uncategorized',
-      image_url: product.image_url ?? null
+      image_url: product.image_url ?? null,
+      qty_on_hand: parseStockQty(product.qty_on_hand, product.id)
     }))
 
     productCategoryMap.value = baseProducts.value.reduce<Record<string, string>>((acc, product) => {
@@ -133,6 +156,10 @@ const loadProducts = async () => {
     }, {})
     productImageMap.value = baseProducts.value.reduce<Record<string, string | null>>((acc, product) => {
       acc[product.product_id] = product.image_url ?? null
+      return acc
+    }, {})
+    productQtyMap.value = baseProducts.value.reduce<Record<string, number>>((acc, product) => {
+      acc[product.product_id] = product.qty_on_hand
       return acc
     }, {})
   } catch (error: unknown) {
@@ -190,6 +217,7 @@ watch(search, async (value) => {
       sale_price: number
       category_name?: string | null
       image_url?: string | null
+      qty_on_hand?: unknown
     }>>(`/products/search/billing?q=${encodeURIComponent(value.trim())}`)
     searchResults.value = rows.map(mapProductRow)
   } catch (error: unknown) {
@@ -208,26 +236,6 @@ const openAddItemModal = (product: ProductResult) => {
   addItemForm.discountType = 'amount'
   addItemForm.discountValue = 0
   isAddModalOpen.value = true
-}
-
-const quickAddToCart = async (product: ProductResult) => {
-  clearError()
-  try {
-    isWorking.value = true
-    const id = await ensureOrder()
-    await request(`/orders/${id}/items`, {
-      method: 'POST',
-      body: {
-        productId: product.product_id,
-        qty: 1
-      }
-    })
-    await refreshOrder()
-  } catch (error: unknown) {
-    errorMessage.value = (error as { message?: string }).message ?? 'Failed to add item'
-  } finally {
-    isWorking.value = false
-  }
 }
 
 const confirmAddItem = async () => {
@@ -504,38 +512,37 @@ const startNewBill = () => {
           </UButton>
         </div>
 
-        <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+        <div class="mt-5 grid gap-3 overflow-visible sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
           <button
             v-for="product in activeProducts"
             :key="product.product_id"
             type="button"
-            class="rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-emerald-300 hover:shadow-sm dark:border-slate-700 dark:bg-slate-900"
+            class="relative z-0 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition duration-200 ease-out hover:z-10 hover:-translate-y-1 hover:scale-[1.02] hover:border-emerald-400 hover:shadow-lg hover:shadow-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-slate-900 active:translate-y-0 active:scale-[1.01] dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-500 dark:hover:shadow-emerald-400/10"
             :disabled="isWorking"
-            @click="quickAddToCart(product)"
+            @click="openAddItemModal(product)"
           >
-            <div class="relative mb-3">
+            <div class="mb-3">
               <img
                 :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
                 alt="Product image"
                 class="h-44 w-full rounded-lg object-cover"
               />
-              <div class="absolute left-2 top-2">
-                <UBadge color="primary" variant="soft">{{ product.category }}</UBadge>
-              </div>
             </div>
-            <p class="line-clamp-2 min-h-[2.75rem] font-medium text-slate-800 dark:text-slate-100">{{ product.display_name }}</p>
+            <div class="mb-0 flex min-h-[2.75rem] items-start justify-between gap-2">
+              <p class="line-clamp-2 flex-1 text-left font-medium text-slate-800 dark:text-slate-100">
+                {{ product.display_name }}
+              </p>
+              <span class="shrink-0 pt-0.5 text-right text-xs tabular-nums text-slate-600 dark:text-slate-300">
+                <span class="text-slate-500 dark:text-slate-400">Qty</span>
+                <span class="ml-1 font-semibold text-slate-800 dark:text-slate-100">
+                  {{ formatStockQty(product.qty_on_hand) }}
+                </span>
+              </span>
+            </div>
             <p class="text-xs text-slate-500">{{ product.sku }}</p>
             <p class="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
               {{ formatCurrency(product.sale_price) }}
             </p>
-            <button
-              type="button"
-              class="mt-1 text-[11px] text-emerald-700 underline underline-offset-2 dark:text-emerald-400"
-              :disabled="isWorking"
-              @click.stop="openAddItemModal(product)"
-            >
-              Click to add discount
-            </button>
           </button>
         </div>
 
@@ -554,7 +561,7 @@ const startNewBill = () => {
         </div>
 
         <div v-if="cart.length === 0" class="mt-5 rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500">
-          Your cart is empty. Tap any product to add it.
+          Your cart is empty. Tap a product to set quantity, discounts, and add to cart.
         </div>
 
         <div class="mt-4 space-y-3">
@@ -642,6 +649,9 @@ const startNewBill = () => {
           <div class="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
             <p class="font-medium text-slate-800 dark:text-slate-100">{{ selectedProduct?.display_name ?? '-' }}</p>
             <p class="text-xs text-slate-500">{{ selectedProduct?.sku ?? '-' }}</p>
+            <p class="mt-1 text-xs text-slate-600 dark:text-slate-300">
+              Available qty: {{ formatStockQty(Number(selectedProduct?.qty_on_hand ?? 0)) }}
+            </p>
             <p class="mt-1 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
               {{ formatCurrency(Number(selectedProduct?.sale_price ?? 0)) }}
             </p>

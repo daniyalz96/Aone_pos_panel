@@ -10,9 +10,15 @@ export class ApiError extends Error {
   }
 }
 
+function isSessionExpired401(statusCode: number, message: string) {
+  if (statusCode !== 401) return false
+  // Backend `requireAuth`: expired/invalid JWT or inactive user. Not login failures ("Invalid credentials").
+  return message === 'Invalid token' || message === 'Invalid user'
+}
+
 export const useApi = () => {
   const config = useRuntimeConfig()
-  const { token } = useAuth()
+  const { token, clearAuth } = useAuth()
 
   const request = async <T>(path: string, options: Parameters<typeof $fetch<T>>[1] = {}) => {
     try {
@@ -39,6 +45,12 @@ export const useApi = () => {
       } else if (typeof err.message === 'string' && err.message) {
         message = err.message
       }
+
+      if (import.meta.client && isSessionExpired401(statusCode, message)) {
+        await clearAuth()
+        throw new ApiError('Session expired', statusCode)
+      }
+
       throw new ApiError(message, statusCode)
     }
   }

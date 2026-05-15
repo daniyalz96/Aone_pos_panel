@@ -1,39 +1,98 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { supplierBalanceAndCatalogSelect } from "../db/supplierAggregatesSql.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
+import { fetchSupplierRowWithAggregates, replaceSupplierCatalogLinks, supplierToPublicJson } from "../services/supplierCatalogLinks.js";
+import { zCatalogUuidArray } from "../utils/catalogIdArrays.js";
+import { postSupplierOpeningBalance } from "../services/supplierLedger.js";
 import { applyStockMovement } from "./inventory.js";
 
 const router = Router();
 
 router.get("/suppliers", requireAuth, async (_req, res) => {
   const rows = await pool.query(
-    `SELECT * FROM suppliers WHERE is_active = TRUE ORDER BY name ASC`,
+    `
+      SELECT s.*,
+      ${supplierBalanceAndCatalogSelect}
+      FROM suppliers s
+      WHERE s.is_active = TRUE
+      ORDER BY s.company_name ASC, s.name ASC
+    `,
   );
-  return res.json(rows.rows);
+  return res.json(rows.rows.map((r) => supplierToPublicJson(r as Record<string, unknown>)));
 });
 
 router.post("/suppliers", requireAuth, requirePermission("manage_inventory"), async (req, res) => {
   const schema = z.object({
     name: z.string().min(2).max(120),
+    companyName: z.string().min(2).max(200).optional(),
+    contactPerson: z.string().max(120).optional().nullable(),
     phone: z.string().max(25).optional(),
-    email: z.string().email().optional(),
+    email: z.string().email().optional().or(z.literal("")),
+    address: z.string().max(500).optional().nullable(),
+    taxNtn: z.string().max(80).optional().nullable(),
+    openingBalance: z.number().nonnegative().optional().default(0),
+    categoryIds: zCatalogUuidArray().optional(),
+    productIds: zCatalogUuidArray().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
   }
 
-  const inserted = await pool.query(
-    `
-      INSERT INTO suppliers (name, phone, email, is_active)
-      VALUES ($1, $2, $3, TRUE)
-      RETURNING *
-    `,
-    [parsed.data.name, parsed.data.phone ?? null, parsed.data.email ?? null],
-  );
+  const companyName = parsed.data.companyName ?? parsed.data.name;
+  const email = parsed.data.email === "" ? null : parsed.data.email ?? null;
+  const opening = parsed.data.openingBalance ?? 0;
 
-  return res.status(201).json(inserted.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const inserted = await client.query(
+      `
+        INSERT INTO suppliers
+          (name, company_name, contact_person, phone, email, address, tax_ntn, opening_balance, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+        RETURNING *
+      `,
+      [
+        parsed.data.name,
+        companyName,
+        parsed.data.contactPerson ?? null,
+        parsed.data.phone ?? null,
+        email,
+        parsed.data.address ?? null,
+        parsed.data.taxNtn ?? null,
+        opening,
+      ],
+    );
+    const row = inserted.rows[0] as { id: string };
+    if (opening > 0) {
+      await postSupplierOpeningBalance(client, {
+        supplierId: row.id,
+        amount: opening,
+        userId: req.user?.id ?? null,
+      });
+    }
+    await replaceSupplierCatalogLinks(
+      client,
+      row.id,
+      parsed.data.categoryIds,
+      parsed.data.productIds,
+    );
+    await client.query("COMMIT");
+    const full = await fetchSupplierRowWithAggregates(row.id);
+    if (!full) {
+      return res.status(500).json({ message: "Supplier was created but could not be reloaded with catalog data." });
+    }
+    return res.status(201).json(full);
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Unexpected error";
+    return res.status(400).json({ message });
+  } finally {
+    client.release();
+  }
 });
 
 router.post("/grn", requireAuth, requirePermission("manage_inventory"), async (req, res) => {

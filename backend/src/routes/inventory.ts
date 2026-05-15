@@ -212,6 +212,21 @@ router.post("/stock-in", requireAuth, requirePermission("manage_inventory"), asy
       batchId,
       userId: req.user?.id ?? null,
     });
+
+    /** First-time global stock: record opening balance once it was unset and on-hand is now positive. */
+    if (!parsed.data.branchId) {
+      await pool.query(
+        `
+          UPDATE inventory_balances
+          SET opening_balance = qty_on_hand, updated_at = NOW()
+          WHERE product_id = $1
+            AND opening_balance IS NULL
+            AND qty_on_hand > 0
+        `,
+        [parsed.data.productId],
+      );
+    }
+
     return res.status(201).json(result);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unexpected error";
@@ -251,9 +266,21 @@ router.post("/stock-out", requireAuth, requirePermission("manage_inventory"), as
   }
 });
 
-router.get("/balances", requireAuth, async (_req, res) => {
-  const branchId = _req.query.branchId as string | undefined;
+router.get("/balances", requireAuth, async (req, res) => {
+  const branchId = req.query.branchId as string | undefined;
+  const departmentId =
+    typeof req.query.departmentId === "string" && /^[0-9a-f-]{36}$/i.test(req.query.departmentId)
+      ? req.query.departmentId
+      : undefined;
+
   if (branchId) {
+    const params: unknown[] = [branchId];
+    let deptClause = "";
+    if (departmentId) {
+      params.push(departmentId);
+      deptClause = `AND c.department_id = $${params.length}`;
+    }
+
     const branchResult = await pool.query(
       `
         SELECT
@@ -262,6 +289,13 @@ router.get("/balances", requireAuth, async (_req, res) => {
           p.id AS product_id,
           p.name,
           p.sku,
+          p.barcode,
+          p.cost_price,
+          p.sale_price,
+          c.id AS category_id,
+          c.name AS category_name,
+          d.id AS department_id,
+          d.name AS department_name,
           pv.id AS variant_id,
           pv.name AS variant_name,
           ib.batch_code,
@@ -270,14 +304,24 @@ router.get("/balances", requireAuth, async (_req, res) => {
         FROM branch_inventory_balances bib
         JOIN branches b ON b.id = bib.branch_id
         JOIN products p ON p.id = bib.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN departments d ON d.id = c.department_id
         LEFT JOIN product_variants pv ON pv.id = bib.variant_id
         LEFT JOIN inventory_batches ib ON ib.id = bib.batch_id
         WHERE bib.branch_id = $1
+          ${deptClause}
         ORDER BY p.name ASC
       `,
-      [branchId],
+      params,
     );
     return res.json(branchResult.rows);
+  }
+
+  const params: unknown[] = [];
+  let deptClause = "";
+  if (departmentId) {
+    params.push(departmentId);
+    deptClause = `AND c.department_id = $${params.length}`;
   }
 
   const result = await pool.query(
@@ -287,14 +331,170 @@ router.get("/balances", requireAuth, async (_req, res) => {
         p.name,
         p.sku,
         p.barcode,
-        COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
+        p.cost_price,
+        p.sale_price,
+        c.id AS category_id,
+        c.name AS category_name,
+        d.id AS department_id,
+        d.name AS department_name,
+        COALESCE(inv.qty_on_hand, 0) AS qty_on_hand,
+        inv.opening_balance AS opening_balance
       FROM products p
-      LEFT JOIN inventory_balances ib ON ib.product_id = p.id
+      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN departments d ON d.id = c.department_id
+      LEFT JOIN inventory_balances inv ON inv.product_id = p.id
       WHERE p.is_active = TRUE
+        ${deptClause}
       ORDER BY p.name ASC
     `,
+    params,
   );
   return res.json(result.rows);
+});
+
+/** Set global on-hand quantity (creates adjustment / stock-out movements vs current balance). */
+router.patch("/balances/:productId", requireAuth, requirePermission("manage_inventory"), async (req, res) => {
+  const rawId = req.params.productId;
+  const productIdCandidate = typeof rawId === "string" ? rawId : Array.isArray(rawId) ? rawId[0] : "";
+  if (!productIdCandidate || !z.string().uuid().safeParse(productIdCandidate).success) {
+    return res.status(400).json({ message: "Invalid product id" });
+  }
+  const productId = productIdCandidate;
+
+  const schema = z
+    .object({
+      qtyOnHand: z.coerce.number().min(0).optional(),
+      openingBalance: z.coerce.number().min(0).optional(),
+      reason: z.string().max(200).optional(),
+    })
+    .refine((d) => d.qtyOnHand !== undefined || d.openingBalance !== undefined, {
+      message: "Send qtyOnHand and/or openingBalance",
+    });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const productCheck = await client.query(`SELECT id FROM products WHERE id = $1 AND is_active = TRUE`, [
+      productId,
+    ]);
+    if (productCheck.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Product not found or inactive" });
+    }
+
+    await client.query(
+      `
+        INSERT INTO inventory_balances (product_id, qty_on_hand)
+        VALUES ($1, 0)
+        ON CONFLICT (product_id) DO NOTHING
+      `,
+      [productId],
+    );
+
+    const curRow = await client.query<{ qty_on_hand: string; opening_balance: string | null }>(
+      `SELECT qty_on_hand, opening_balance FROM inventory_balances WHERE product_id = $1 FOR UPDATE`,
+      [productId],
+    );
+    const currentQty = Number(curRow.rows[0]?.qty_on_hand ?? 0);
+    const rawOb = curRow.rows[0]?.opening_balance;
+    const currentOpening: number | null =
+      rawOb === null || rawOb === undefined || rawOb === ""
+        ? null
+        : (() => {
+            const n = Number(rawOb);
+            return Number.isFinite(n) ? n : null;
+          })();
+
+    const qtyInRequest = parsed.data.qtyOnHand !== undefined;
+    const openingInRequest = parsed.data.openingBalance !== undefined;
+    const reqQty = qtyInRequest ? Number(parsed.data.qtyOnHand!.toFixed(3)) : undefined;
+    const reqOpening = openingInRequest ? Number(parsed.data.openingBalance!.toFixed(3)) : undefined;
+
+    const qtyClose = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+
+    const qtyValueChanged =
+      qtyInRequest && reqQty !== undefined && !qtyClose(reqQty, currentQty);
+
+    /** Request differs from stored opening (including first persist when stored is null). */
+    const openingRecordChanged =
+      openingInRequest &&
+      reqOpening !== undefined &&
+      (currentOpening === null || !qtyClose(reqOpening, currentOpening));
+
+    /**
+     * Explicit quantity edit wins. Otherwise, changing an existing opening reference shifts on-hand
+     * by the same delta (e.g. opening 10→9 with qty 8 → qty 7, preserving 2 units "sold since opening").
+     * First time recording opening (null → value) updates the column only; physical qty unchanged.
+     */
+    let targetQty: number;
+    if (qtyValueChanged) {
+      targetQty = reqQty!;
+    } else if (currentOpening !== null && openingRecordChanged) {
+      targetQty = Math.max(0, Number((currentQty + (reqOpening! - currentOpening)).toFixed(3)));
+    } else if (currentOpening === null && openingRecordChanged) {
+      targetQty = currentQty;
+    } else if (qtyInRequest && reqQty !== undefined) {
+      targetQty = reqQty;
+    } else {
+      targetQty = currentQty;
+    }
+
+    const openingProvided = openingInRequest;
+    const diff = targetQty - currentQty;
+
+    const note = parsed.data.reason?.trim() || "Manual quantity edit";
+
+    if (diff > 0) {
+      await applyStockMovement({
+        productId,
+        movementType: "adjustment",
+        qty: diff,
+        reason: note,
+        userId: req.user?.id ?? null,
+        dbClient: client,
+      });
+    } else if (diff < 0) {
+      await applyStockMovement({
+        productId,
+        movementType: "stock_out",
+        qty: Math.abs(diff),
+        reason: note,
+        userId: req.user?.id ?? null,
+        dbClient: client,
+      });
+    }
+
+    if (openingProvided) {
+      const ob = Number(parsed.data.openingBalance!.toFixed(3));
+      await client.query(
+        `
+          UPDATE inventory_balances
+          SET opening_balance = $2, updated_at = NOW()
+          WHERE product_id = $1
+        `,
+        [productId, ob],
+      );
+    }
+
+    await client.query("COMMIT");
+    return res.json({
+      productId,
+      previousQty: currentQty,
+      nextQty: targetQty,
+      openingBalance: openingProvided ? Number(parsed.data.openingBalance!.toFixed(3)) : undefined,
+    });
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Unexpected error";
+    return res.status(400).json({ message });
+  } finally {
+    client.release();
+  }
 });
 
 router.get("/low-stock", requireAuth, async (req, res) => {
