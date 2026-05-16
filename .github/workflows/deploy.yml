@@ -1,0 +1,130 @@
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  DEPLOY_PATH: /opt/aone-pos
+  NUXT_PUBLIC_API_BASE: /api/v1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # ---------- Backend ----------
+      - name: Backend - install
+        working-directory: backend
+        run: npm ci --no-audit --no-fund
+
+      - name: Backend - build
+        working-directory: backend
+        run: npm run build
+
+      # ---------- Frontend ----------
+      - name: Frontend - install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Frontend - build
+        working-directory: frontend
+        env:
+          NODE_ENV: production
+          NUXT_PUBLIC_API_BASE: ${{ env.NUXT_PUBLIC_API_BASE }}
+        run: npx nuxt build
+
+      # ---------- SSH setup ----------
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # ---------- Ship artifacts ----------
+      # Backend: source + build output + migrations + lockfile. We rebuild
+      # production node_modules on the server (avoids OS/glibc mismatch
+      # risk for any future native deps).
+      - name: Rsync backend
+        run: |
+          rsync -az --delete \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='.DS_Store' \
+            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            backend/ ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/backend/
+
+      # Frontend: only the build output + lockfile/package.json. The Nuxt
+      # server only needs .output/ to run.
+      - name: Rsync frontend
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            frontend/.output/ ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/frontend/.output/
+          rsync -az \
+            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            frontend/package.json frontend/package-lock.json \
+            ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/frontend/
+
+      # ---------- Remote: install prod deps, migrate, reload ----------
+      - name: Remote install + migrate + reload
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            ${DEPLOY_USER}@${DEPLOY_HOST} bash -se <<'REMOTE'
+          set -euo pipefail
+          cd /opt/aone-pos/backend
+
+          # Production deps only. Fast no-op when lockfile didn't change.
+          npm ci --omit=dev --no-audit --no-fund
+
+          # Idempotent migrations (IF NOT EXISTS guarded in SQL).
+          npm run migrate:prod
+
+          # Zero-downtime restart of both processes.
+          pm2 reload aone-pos-backend
+          pm2 reload aone-pos-frontend
+          pm2 save
+
+          # Quick health probe.
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4000/api/v1/health || true)
+            if [ "$code" = "200" ]; then
+              echo "backend healthy"
+              break
+            fi
+            echo "waiting for backend (try $i, got '$code')"
+            sleep 2
+          done
+
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ || true)
+          echo "nginx -> frontend status: $code"
+          REMOTE
+
+      - name: Smoke test from runner
+        run: |
+          set -e
+          curl -fsS -o /dev/null -w "GET /login -> %{http_code}\n" http://${DEPLOY_HOST}/login
+          curl -fsS -o /dev/null -w "GET /api/v1/health -> %{http_code}\n" http://${DEPLOY_HOST}/api/v1/health
