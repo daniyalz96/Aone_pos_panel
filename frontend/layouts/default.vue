@@ -1,15 +1,40 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from '#imports'
 import { useAppNavigation } from '~/composables/useAppNavigation'
 import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 
+type DashboardSummary = {
+  today_sales: number | string
+  today_invoice_count: number
+}
+
 const route = useRoute()
 const { links } = useAppNavigation() // role-filtered (e.g. Ledger for admin/manager only)
 const { request } = useApi()
-const { user, clearAuth } = useAuth()
+const { user, clearAuth, hydrateFromStorage } = useAuth()
 const unreadAlerts = ref(0)
+const todayOverview = ref<DashboardSummary | null>(null)
+const todayOverviewLoading = ref(false)
+const todayOverviewError = ref(false)
+
+function fmtPkr(n: number) {
+  return `Rs ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+}
+
+const todaySalesLabel = computed(() => {
+  if (todayOverviewLoading.value && !todayOverview.value) return '…'
+  if (todayOverviewError.value || !todayOverview.value) return '—'
+  return fmtPkr(Number(todayOverview.value.today_sales))
+})
+
+const todayTransactionsLabel = computed(() => {
+  if (todayOverviewLoading.value && !todayOverview.value) return 'Loading…'
+  if (todayOverviewError.value || !todayOverview.value) return 'Could not load'
+  const count = Number(todayOverview.value.today_invoice_count)
+  return `${count} transaction${count === 1 ? '' : 's'} today`
+})
 
 const loadUnreadAlerts = async () => {
   try {
@@ -20,8 +45,23 @@ const loadUnreadAlerts = async () => {
   }
 }
 
+const loadTodayOverview = async () => {
+  if (!import.meta.client) return
+  hydrateFromStorage()
+  todayOverviewLoading.value = true
+  todayOverviewError.value = false
+  try {
+    todayOverview.value = await request<DashboardSummary>('/home/kpis')
+  } catch {
+    todayOverviewError.value = true
+    todayOverview.value = null
+  } finally {
+    todayOverviewLoading.value = false
+  }
+}
+
 onMounted(async () => {
-  await loadUnreadAlerts()
+  await Promise.all([loadUnreadAlerts(), loadTodayOverview()])
 })
 </script>
 
@@ -58,8 +98,10 @@ onMounted(async () => {
 
         <UCard class="mt-8 bg-slate-900 text-white">
           <p class="text-sm font-semibold">Today Overview</p>
-          <p class="mt-3 text-2xl font-bold">PKR 126,420</p>
-          <p class="mt-1 text-xs text-slate-300">32 transactions in current shift</p>
+          <p class="mt-3 text-xs font-medium text-slate-300">Today sales</p>
+          <p class="text-2xl font-bold">{{ todaySalesLabel }}</p>
+          <p class="mt-3 text-xs font-medium text-slate-300">Transactions</p>
+          <p class="text-sm text-slate-200">{{ todayTransactionsLabel }}</p>
         </UCard>
       </aside>
 

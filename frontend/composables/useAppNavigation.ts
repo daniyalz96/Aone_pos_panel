@@ -18,6 +18,7 @@ const allLinks: AppLink[] = [
   { label: 'Purchases', icon: 'i-lucide-file-input', to: '/purchases' },
   { label: 'Purchase returns', icon: 'i-lucide-package-minus', to: '/purchase-returns' },
   { label: 'Customers', icon: 'i-lucide-users', to: '/customers' },
+  { label: 'Expenses', icon: 'i-lucide-wallet', to: '/expenses' },
   { label: 'Reports', icon: 'i-lucide-chart-column-big', to: '/reports' },
   {
     label: 'Ledger & GL',

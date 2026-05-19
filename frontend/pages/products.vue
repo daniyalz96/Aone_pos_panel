@@ -5,21 +5,9 @@ import { ApiError, useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { useRuntimeConfig } from '#imports'
 import DepartmentCreateForm from '~/components/DepartmentCreateForm.vue'
+import { selectToPrimitive } from '~/composables/useSelectValue'
 
 const SORT_VALUES = ['created_desc', 'created_asc', 'name_asc', 'name_desc', 'sale_asc', 'sale_desc'] as const
-
-/** USelect may emit a raw value or an item object depending on version / state. */
-function selectToPrimitive(val: unknown): string | undefined {
-  if (val === null || val === undefined) return undefined
-  if (typeof val === 'string') return val.trim()
-  if (typeof val === 'number' || typeof val === 'boolean') return String(val)
-  if (typeof val === 'object' && val !== null && 'value' in val) {
-    const inner = (val as { value: unknown }).value
-    if (inner === null || inner === undefined) return undefined
-    return typeof inner === 'string' ? inner.trim() : String(inner).trim()
-  }
-  return undefined
-}
 
 /** PG / JSON may expose is_active as boolean or string; Boolean("false") === true in JS. */
 function normalizeActiveFlag(v: unknown): boolean {
@@ -93,6 +81,7 @@ type ExcelImportRow = {
 const { request } = useApi()
 const { user, token, setAuth } = useAuth()
 const config = useRuntimeConfig()
+const toast = useToast()
 const NO_CATEGORY_VALUE = '__none__'
 const FILTER_ALL_CATEGORIES = '__all_categories__'
 /** Create-category flow: user must pick a real department from the list. */
@@ -138,10 +127,22 @@ const refreshUserProfile = async () => {
   }
 }
 
+const PRODUCT_PAGE_SIZE = 100
+const CATEGORY_PAGE_SIZE = 30
+
+type Paginated<T> = { items: T[]; total: number; limit: number; offset: number }
+
 const isLoading = ref(false)
 const errorMessage = ref('')
 const products = ref<Product[]>([])
-const categories = ref<Category[]>([])
+/** Full list for filters and product forms. */
+const allCategories = ref<Category[]>([])
+/** Current page for the categories table. */
+const categoryTableRows = ref<Category[]>([])
+const productTotal = ref(0)
+const categoryTotal = ref(0)
+const productPage = ref(1)
+const categoryPage = ref(1)
 const departments = ref<Department[]>([])
 const query = ref('')
 const filterCategoryId = ref(FILTER_ALL_CATEGORIES)
@@ -152,6 +153,22 @@ const sortBy = ref<'created_desc' | 'created_asc' | 'name_asc' | 'name_desc' | '
 const isEditModalOpen = ref(false)
 const editingProductId = ref<string | null>(null)
 const togglingProductId = ref<string | null>(null)
+const deletingProductId = ref<string | null>(null)
+const deletingCategoryId = ref<string | null>(null)
+const bulkDeletingProducts = ref(false)
+const bulkDeletingCategories = ref(false)
+const selectedProductIds = ref<Set<string>>(new Set())
+const selectedCategoryIds = ref<Set<string>>(new Set())
+const deleteConfirmOpen = ref(false)
+const deleteConfirmLoading = ref(false)
+
+type DeletePending =
+  | { kind: 'product'; mode: 'single'; product: Product }
+  | { kind: 'product'; mode: 'bulk' }
+  | { kind: 'category'; mode: 'single'; category: Category }
+  | { kind: 'category'; mode: 'bulk' }
+
+const deletePending = ref<DeletePending | null>(null)
 
 const productForm = reactive({
   name: '',
@@ -207,10 +224,29 @@ const categoryLabel = (category: Category) =>
 
 const filterCategoryItems = computed(() => [
   { label: 'All categories', value: FILTER_ALL_CATEGORIES },
-  ...categories.value
+  ...allCategories.value
     .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
     .map((category) => ({ label: categoryLabel(category), value: category.id }))
 ])
+
+const productPageCount = computed(() =>
+  Math.max(1, Math.ceil(productTotal.value / PRODUCT_PAGE_SIZE) || 1)
+)
+const categoryPageCount = computed(() =>
+  Math.max(1, Math.ceil(categoryTotal.value / CATEGORY_PAGE_SIZE) || 1)
+)
+const productRangeStart = computed(() =>
+  productTotal.value === 0 ? 0 : (productPage.value - 1) * PRODUCT_PAGE_SIZE + 1
+)
+const productRangeEnd = computed(() =>
+  Math.min(productPage.value * PRODUCT_PAGE_SIZE, productTotal.value)
+)
+const categoryRangeStart = computed(() =>
+  categoryTotal.value === 0 ? 0 : (categoryPage.value - 1) * CATEGORY_PAGE_SIZE + 1
+)
+const categoryRangeEnd = computed(() =>
+  Math.min(categoryPage.value * CATEGORY_PAGE_SIZE, categoryTotal.value)
+)
 
 const statusFilterItems = [
   { label: 'All statuses', value: 'all' },
@@ -229,7 +265,7 @@ const sortSelectItems = [
 
 const categorySelectItems = computed(() => [
   { label: 'No category', value: NO_CATEGORY_VALUE },
-  ...categories.value
+  ...allCategories.value
     .filter((category) => typeof category.id === 'string' && category.id.trim().length > 0)
     .map((category) => ({ label: categoryLabel(category), value: category.id }))
 ])
@@ -482,7 +518,19 @@ let productFilterDebounce: ReturnType<typeof setTimeout> | null = null
 let productFetchGeneration = 0
 
 const productsListUrl = () =>
-  withQuery('/products', buildProductListQuery() as Record<string, string | number | boolean | undefined>)
+  withQuery('/products', {
+    ...(buildProductListQuery() as Record<string, string | number | boolean | undefined>),
+    limit: PRODUCT_PAGE_SIZE,
+    offset: (productPage.value - 1) * PRODUCT_PAGE_SIZE,
+    withTotal: 'true'
+  })
+
+const categoriesTableUrl = () =>
+  withQuery('/products/categories', {
+    limit: CATEGORY_PAGE_SIZE,
+    offset: (categoryPage.value - 1) * CATEGORY_PAGE_SIZE,
+    withTotal: 'true'
+  })
 
 const productCategorySelectModel = computed({
   get: () => productForm.categoryId,
@@ -538,26 +586,57 @@ const sortByModel = computed({
   }
 })
 
+const mapProductRows = (rows: Product[]) =>
+  rows.map((row) => {
+    const r = row as Product & { is_active?: unknown; category_id?: string | null }
+    return {
+      ...r,
+      category_id: r.category_id ?? null,
+      is_active: normalizeActiveFlag(r.is_active)
+    }
+  })
+
+const loadCategoryTablePage = async () => {
+  const res = await request<Paginated<Category>>(categoriesTableUrl())
+  categoryTableRows.value = res.items
+  categoryTotal.value = res.total
+  const maxPage = Math.max(1, Math.ceil(res.total / CATEGORY_PAGE_SIZE) || 1)
+  if (categoryPage.value > maxPage) {
+    categoryPage.value = maxPage
+    const retry = await request<Paginated<Category>>(categoriesTableUrl())
+    categoryTableRows.value = retry.items
+    categoryTotal.value = retry.total
+  }
+}
+
+const loadProductsPage = async (gen: number) => {
+  const productRes = await request<Paginated<Product>>(productsListUrl(), { cache: 'no-store' })
+  if (gen !== productFetchGeneration) return
+  products.value = mapProductRows(productRes.items)
+  productTotal.value = productRes.total
+  const maxPage = Math.max(1, Math.ceil(productRes.total / PRODUCT_PAGE_SIZE) || 1)
+  if (productPage.value > maxPage) {
+    productPage.value = maxPage
+    const retry = await request<Paginated<Product>>(productsListUrl(), { cache: 'no-store' })
+    if (gen !== productFetchGeneration) return
+    products.value = mapProductRows(retry.items)
+    productTotal.value = retry.total
+  }
+}
+
 const loadData = async () => {
   const gen = ++productFetchGeneration
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [productRes, categoryRes, departmentRes] = await Promise.all([
-      request<Product[]>(productsListUrl(), { cache: 'no-store' }),
+    const [, categoryListRes, , departmentRes] = await Promise.all([
+      loadProductsPage(gen),
       request<Category[]>('/products/categories'),
+      loadCategoryTablePage(),
       request<Department[]>('/products/departments')
     ])
     if (gen !== productFetchGeneration) return
-    products.value = productRes.map((row) => {
-      const r = row as Product & { is_active?: unknown; category_id?: string | null }
-      return {
-        ...r,
-        category_id: r.category_id ?? null,
-        is_active: normalizeActiveFlag(r.is_active)
-      }
-    })
-    categories.value = categoryRes
+    allCategories.value = categoryListRes
     departments.value = departmentRes
   } catch (error: unknown) {
     if (gen !== productFetchGeneration) return
@@ -569,6 +648,33 @@ const loadData = async () => {
   } finally {
     if (gen === productFetchGeneration) isLoading.value = false
   }
+}
+
+const setProductPage = (page: number) => {
+  const next = Math.min(Math.max(1, page), productPageCount.value)
+  if (next === productPage.value) return
+  productPage.value = next
+  void reloadProductsNow()
+}
+
+const setCategoryPage = (page: number) => {
+  const next = Math.min(Math.max(1, page), categoryPageCount.value)
+  if (next === categoryPage.value) return
+  categoryPage.value = next
+  void (async () => {
+    isLoading.value = true
+    try {
+      await loadCategoryTablePage()
+    } catch (error: unknown) {
+      if (error instanceof ApiError) {
+        errorMessage.value = error.message
+      } else {
+        errorMessage.value = (error as { message?: string }).message ?? 'Failed to load categories'
+      }
+    } finally {
+      isLoading.value = false
+    }
+  })()
 }
 
 const resolveDepartmentIdForCreate = (): string | undefined => {
@@ -699,7 +805,7 @@ const openEditProduct = (product: Product) => {
       ? product.category_id.trim()
       : ''
   editForm.categoryId =
-    cid || (categories.value.find((category) => category.name === (product.category_name ?? ''))?.id ?? NO_CATEGORY_VALUE)
+    cid || (allCategories.value.find((category) => category.name === (product.category_name ?? ''))?.id ?? NO_CATEGORY_VALUE)
   if (editImageInputRef.value) {
     editImageInputRef.value.value = ''
   }
@@ -753,6 +859,258 @@ const toggleProductActive = async (product: Product) => {
   }
 }
 
+const selectedProductCount = computed(() => selectedProductIds.value.size)
+const selectedCategoryCount = computed(() => selectedCategoryIds.value.size)
+
+const allProductsOnPageSelected = computed(
+  () => products.value.length > 0 && products.value.every((p) => selectedProductIds.value.has(p.id))
+)
+const allCategoriesOnPageSelected = computed(
+  () =>
+    categoryTableRows.value.length > 0 &&
+    categoryTableRows.value.every((c) => selectedCategoryIds.value.has(c.id))
+)
+
+const clearProductSelection = () => {
+  selectedProductIds.value = new Set()
+}
+const clearCategorySelection = () => {
+  selectedCategoryIds.value = new Set()
+}
+
+const deleteConfirmTitle = computed(() => {
+  const pending = deletePending.value
+  if (!pending) return 'Confirm delete'
+  const label = pending.kind === 'product' ? 'product' : 'category'
+  if (pending.mode === 'bulk') {
+    const count = pending.kind === 'product' ? selectedProductCount.value : selectedCategoryCount.value
+    return `Delete ${count} ${label}(s)?`
+  }
+  if (pending.kind === 'product') return `Delete "${pending.product.name}"?`
+  return `Delete "${pending.category.name}"?`
+})
+
+const deleteConfirmDescription =
+  'The item will be deactivated and hidden from POS. Sales and purchase history are kept.'
+
+const closeDeleteConfirm = () => {
+  if (deleteConfirmLoading.value) return
+  deleteConfirmOpen.value = false
+  deletePending.value = null
+}
+
+const openDeleteProductConfirm = (product: Product) => {
+  deletePending.value = { kind: 'product', mode: 'single', product }
+  deleteConfirmOpen.value = true
+}
+
+const openBulkDeleteProductsConfirm = () => {
+  if (!selectedProductCount.value) return
+  deletePending.value = { kind: 'product', mode: 'bulk' }
+  deleteConfirmOpen.value = true
+}
+
+const openDeleteCategoryConfirm = (category: Category) => {
+  deletePending.value = { kind: 'category', mode: 'single', category }
+  deleteConfirmOpen.value = true
+}
+
+const openBulkDeleteCategoriesConfirm = () => {
+  if (!selectedCategoryCount.value) return
+  deletePending.value = { kind: 'category', mode: 'bulk' }
+  deleteConfirmOpen.value = true
+}
+
+const setProductSelected = (id: string, checked: boolean) => {
+  const next = new Set(selectedProductIds.value)
+  if (checked) next.add(id)
+  else next.delete(id)
+  selectedProductIds.value = next
+}
+
+const setCategorySelected = (id: string, checked: boolean) => {
+  const next = new Set(selectedCategoryIds.value)
+  if (checked) next.add(id)
+  else next.delete(id)
+  selectedCategoryIds.value = next
+}
+
+const toggleSelectAllProducts = () => {
+  const next = new Set(selectedProductIds.value)
+  if (allProductsOnPageSelected.value) {
+    for (const p of products.value) next.delete(p.id)
+  } else {
+    for (const p of products.value) next.add(p.id)
+  }
+  selectedProductIds.value = next
+}
+
+const toggleSelectAllCategories = () => {
+  const next = new Set(selectedCategoryIds.value)
+  if (allCategoriesOnPageSelected.value) {
+    for (const c of categoryTableRows.value) next.delete(c.id)
+  } else {
+    for (const c of categoryTableRows.value) next.add(c.id)
+  }
+  selectedCategoryIds.value = next
+}
+
+const performDeleteProduct = async (product: Product) => {
+  deletingProductId.value = product.id
+  errorMessage.value = ''
+  try {
+    await request(`/products/${product.id}`, { method: 'DELETE' })
+    setProductSelected(product.id, false)
+    await reloadProductsNow()
+    toast.add({
+      title: 'Product deleted',
+      description: `"${product.name}" was deactivated.`,
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
+  } catch (error: unknown) {
+    const msg =
+      error instanceof ApiError
+        ? error.message
+        : (error as { message?: string }).message ?? 'Failed to delete product'
+    errorMessage.value = msg
+    toast.add({ title: 'Delete failed', description: msg, color: 'error', icon: 'i-lucide-triangle-alert' })
+    throw error
+  } finally {
+    deletingProductId.value = null
+  }
+}
+
+const performBulkDeleteProducts = async () => {
+  const ids = [...selectedProductIds.value]
+  if (!ids.length) return
+  bulkDeletingProducts.value = true
+  errorMessage.value = ''
+  try {
+    const res = await request<{
+      deletedCount: number
+      failed: { id: string; message: string }[]
+    }>('/products/bulk-delete', { method: 'POST', body: { ids } })
+    clearProductSelection()
+    await reloadProductsNow()
+    toast.add({
+      title: 'Products deleted',
+      description: `${res.deletedCount} product(s) deactivated.`,
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
+    if (res.failed?.length) {
+      const msg = res.failed.map((f) => f.message).join(' · ')
+      errorMessage.value = msg
+      toast.add({
+        title: 'Some products were not deleted',
+        description: msg,
+        color: 'warning',
+        icon: 'i-lucide-triangle-alert'
+      })
+    }
+  } catch (error: unknown) {
+    const msg =
+      error instanceof ApiError
+        ? error.message
+        : (error as { message?: string }).message ?? 'Bulk delete failed'
+    errorMessage.value = msg
+    toast.add({ title: 'Bulk delete failed', description: msg, color: 'error', icon: 'i-lucide-triangle-alert' })
+    throw error
+  } finally {
+    bulkDeletingProducts.value = false
+  }
+}
+
+const performDeleteCategory = async (cat: Category) => {
+  deletingCategoryId.value = cat.id
+  errorMessage.value = ''
+  try {
+    await request(`/products/categories/${cat.id}`, { method: 'DELETE' })
+    setCategorySelected(cat.id, false)
+    await reloadProductsNow()
+    toast.add({
+      title: 'Category deleted',
+      description: `"${cat.name}" was deactivated.`,
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
+  } catch (error: unknown) {
+    const msg =
+      error instanceof ApiError
+        ? error.message
+        : (error as { message?: string }).message ?? 'Failed to delete category'
+    errorMessage.value = msg
+    toast.add({ title: 'Delete failed', description: msg, color: 'error', icon: 'i-lucide-triangle-alert' })
+    throw error
+  } finally {
+    deletingCategoryId.value = null
+  }
+}
+
+const performBulkDeleteCategories = async () => {
+  const ids = [...selectedCategoryIds.value]
+  if (!ids.length) return
+  bulkDeletingCategories.value = true
+  errorMessage.value = ''
+  try {
+    const res = await request<{
+      deletedCount: number
+      failed: { id: string; message: string }[]
+    }>('/products/categories/bulk-delete', { method: 'POST', body: { ids } })
+    clearCategorySelection()
+    await reloadProductsNow()
+    toast.add({
+      title: 'Categories deleted',
+      description: `${res.deletedCount} category(ies) deactivated.`,
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
+    if (res.failed?.length) {
+      const msg = res.failed.map((f) => f.message).join(' · ')
+      errorMessage.value = msg
+      toast.add({
+        title: 'Some categories were not deleted',
+        description: msg,
+        color: 'warning',
+        icon: 'i-lucide-triangle-alert'
+      })
+    }
+  } catch (error: unknown) {
+    const msg =
+      error instanceof ApiError
+        ? error.message
+        : (error as { message?: string }).message ?? 'Bulk delete failed'
+    errorMessage.value = msg
+    toast.add({ title: 'Bulk delete failed', description: msg, color: 'error', icon: 'i-lucide-triangle-alert' })
+    throw error
+  } finally {
+    bulkDeletingCategories.value = false
+  }
+}
+
+const confirmDeleteAction = async () => {
+  if (!canManageProducts.value || !deletePending.value) return
+  deleteConfirmLoading.value = true
+  try {
+    const pending = deletePending.value
+    if (pending.kind === 'product' && pending.mode === 'single') {
+      await performDeleteProduct(pending.product)
+    } else if (pending.kind === 'product' && pending.mode === 'bulk') {
+      await performBulkDeleteProducts()
+    } else if (pending.kind === 'category' && pending.mode === 'single') {
+      await performDeleteCategory(pending.category)
+    } else if (pending.kind === 'category' && pending.mode === 'bulk') {
+      await performBulkDeleteCategories()
+    }
+    closeDeleteConfirm()
+  } catch {
+    /* toast + errorMessage already set */
+  } finally {
+    deleteConfirmLoading.value = false
+  }
+}
+
 /** Run product fetch after filter controls settle (typing search, selects). */
 const scheduleProductReload = () => {
   if (productFilterDebounce) clearTimeout(productFilterDebounce)
@@ -773,9 +1131,19 @@ const reloadProductsNow = () => {
 watch(
   [query, filterCategoryId, filterStatus, filterMinSale, filterMaxSale, sortBy],
   () => {
+    productPage.value = 1
+    clearProductSelection()
     scheduleProductReload()
   }
 )
+
+watch(productPage, () => {
+  clearProductSelection()
+})
+
+watch(categoryPage, () => {
+  clearCategorySelection()
+})
 
 onMounted(async () => {
   await refreshUserProfile()
@@ -802,14 +1170,18 @@ onMounted(async () => {
           Every category is stored under one department. Create a department first if the list is empty.
         </p>
         <div class="grid gap-3">
-          <UInput v-model="categoryForm.name" placeholder="Category name" />
-          <UTextarea v-model="categoryForm.description" placeholder="Optional description" />
+          <UiLabeledField label="Category name" html-for="prd-cat-name" required>
+            <UInput id="prd-cat-name" v-model="categoryForm.name" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Description" html-for="prd-cat-desc">
+            <UTextarea id="prd-cat-desc" v-model="categoryForm.description" class="w-full" />
+          </UiLabeledField>
           <div class="grid gap-1">
             <label class="text-xs font-medium text-slate-600 dark:text-slate-400">Department</label>
-            <USelect
+            <UiSearchableSelect
               v-model="categoryDepartmentCreateSelectModel"
               :items="categoryDepartmentCreateItems"
-              placeholder="Department"
+              placeholder="Search department…"
               :disabled="!departments.length"
             />
           </div>
@@ -826,12 +1198,24 @@ onMounted(async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Create Product</h2>
         <div class="grid gap-3 sm:grid-cols-2">
-          <UInput v-model="productForm.name" placeholder="Product name" class="sm:col-span-2" />
-          <UInput v-model="productForm.sku" placeholder="SKU" />
-          <UInput v-model="productForm.barcode" placeholder="Barcode" />
-          <UInput v-model.number="productForm.salePrice" type="number" placeholder="Sale price" />
-          <UInput v-model.number="productForm.costPrice" type="number" placeholder="Cost price" />
-          <UInput v-model.number="productForm.taxRate" type="number" placeholder="Tax %" />
+          <UiLabeledField label="Product name" html-for="prd-new-name" class="sm:col-span-2" required>
+            <UInput id="prd-new-name" v-model="productForm.name" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="SKU" html-for="prd-new-sku">
+            <UInput id="prd-new-sku" v-model="productForm.sku" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Barcode" html-for="prd-new-barcode">
+            <UInput id="prd-new-barcode" v-model="productForm.barcode" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Sale price (Rs)" html-for="prd-new-sale">
+            <UInput id="prd-new-sale" v-model.number="productForm.salePrice" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Cost price (Rs)" html-for="prd-new-cost">
+            <UInput id="prd-new-cost" v-model.number="productForm.costPrice" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Tax %" html-for="prd-new-tax">
+            <UInput id="prd-new-tax" v-model.number="productForm.taxRate" type="number" class="w-full" />
+          </UiLabeledField>
           <div class="sm:col-span-2 grid gap-2">
             <label class="text-xs font-medium text-slate-500">Product image (optional)</label>
             <input
@@ -859,7 +1243,9 @@ onMounted(async () => {
               </UButton>
             </div>
           </div>
-          <USelect v-model="productCategorySelectModel" :items="categorySelectItems" placeholder="Category" />
+          <UiLabeledField label="Category">
+            <UiSearchableSelect v-model="productCategorySelectModel" :items="categorySelectItems" placeholder="Search category…" />
+          </UiLabeledField>
           <div class="sm:col-span-2">
             <UCheckbox v-model="productActiveCheckModel" name="product-active" label="Active (available on POS / billing)" />
           </div>
@@ -871,14 +1257,30 @@ onMounted(async () => {
     <UCard>
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Categories</h2>
-        <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" size="sm" :loading="isLoading" @click="reloadProductsNow">
-          Refresh
-        </UButton>
+        <div class="flex flex-wrap items-center gap-2">
+          <UButton
+            v-if="canManageProducts && selectedCategoryCount > 0"
+            color="error"
+            variant="soft"
+            size="sm"
+            icon="i-lucide-trash-2"
+            :loading="bulkDeletingCategories"
+            @click="openBulkDeleteCategoriesConfirm"
+          >
+            Delete selected ({{ selectedCategoryCount }})
+          </UButton>
+          <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" size="sm" :loading="isLoading" @click="reloadProductsNow">
+            Refresh
+          </UButton>
+        </div>
       </div>
       <div class="overflow-auto">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>
+              <th v-if="canManageProducts" class="w-10 px-3 py-2">
+                <UCheckbox :model-value="allCategoriesOnPageSelected" @update:model-value="toggleSelectAllCategories" />
+              </th>
               <th class="px-3 py-2">Name</th>
               <th class="px-3 py-2">Department</th>
               <th class="px-3 py-2">Description</th>
@@ -887,32 +1289,74 @@ onMounted(async () => {
           </thead>
           <tbody>
             <tr
-              v-for="cat in categories"
+              v-for="cat in categoryTableRows"
               :key="cat.id"
               class="border-b border-slate-100 dark:border-slate-800"
             >
+              <td v-if="canManageProducts" class="px-3 py-2" @click.stop>
+                <UCheckbox
+                  :model-value="selectedCategoryIds.has(cat.id)"
+                  @update:model-value="(v: boolean) => setCategorySelected(cat.id, v)"
+                />
+              </td>
               <td class="px-3 py-2 font-medium">{{ cat.name }}</td>
               <td class="px-3 py-2">{{ cat.department_name || '—' }}</td>
               <td class="max-w-xs truncate px-3 py-2 text-slate-600 dark:text-slate-400">{{ cat.description || '—' }}</td>
               <td class="px-3 py-2">
-                <UButton
-                  v-if="canManageProducts"
-                  size="xs"
-                  color="neutral"
-                  variant="soft"
-                  icon="i-lucide-pencil"
-                  @click="openEditCategory(cat)"
-                >
-                  Edit
-                </UButton>
+                <div v-if="canManageProducts" class="flex flex-wrap items-center gap-1">
+                  <UButton
+                    size="xs"
+                    color="neutral"
+                    variant="soft"
+                    icon="i-lucide-pencil"
+                    @click="openEditCategory(cat)"
+                  >
+                    Edit
+                  </UButton>
+                  <UButton
+                    size="xs"
+                    color="error"
+                    variant="soft"
+                    icon="i-lucide-trash-2"
+                    :loading="deletingCategoryId === cat.id"
+                    @click="openDeleteCategoryConfirm(cat)"
+                  >
+                    Delete
+                  </UButton>
+                </div>
                 <span v-else class="text-slate-400">—</span>
               </td>
             </tr>
-            <tr v-if="!categories.length">
-              <td class="px-3 py-4 text-slate-500" colspan="4">No categories yet.</td>
+            <tr v-if="!categoryTableRows.length && !isLoading">
+              <td class="px-3 py-4 text-slate-500" :colspan="canManageProducts ? 5 : 4">No categories yet.</td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div
+        v-if="categoryTotal > 0"
+        class="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600 dark:text-slate-400"
+      >
+        <span>Showing {{ categoryRangeStart }}–{{ categoryRangeEnd }} of {{ categoryTotal }}</span>
+        <div class="flex items-center gap-2">
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-chevron-left"
+            :disabled="categoryPage <= 1 || isLoading"
+            @click="setCategoryPage(categoryPage - 1)"
+          />
+          <span class="tabular-nums">Page {{ categoryPage }} / {{ categoryPageCount }}</span>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-chevron-right"
+            :disabled="categoryPage >= categoryPageCount || isLoading"
+            @click="setCategoryPage(categoryPage + 1)"
+          />
+        </div>
       </div>
     </UCard>
 
@@ -976,8 +1420,8 @@ onMounted(async () => {
               <td class="px-3 py-2 font-medium">{{ row.name }}</td>
               <td class="px-3 py-2">{{ row.sku }}</td>
               <td class="px-3 py-2">{{ row.barcode }}</td>
-              <td class="px-3 py-2">PKR {{ Number(row.salePrice).toLocaleString() }}</td>
-              <td class="px-3 py-2">PKR {{ Number(row.costPrice).toLocaleString() }}</td>
+              <td class="px-3 py-2">Rs {{ Number(row.salePrice).toLocaleString() }}</td>
+              <td class="px-3 py-2">Rs {{ Number(row.costPrice).toLocaleString() }}</td>
               <td class="px-3 py-2">{{ row.taxRate }}</td>
               <td class="px-3 py-2">
                 <UBadge v-if="row.issues.length === 0" color="success" variant="soft">OK</UBadge>
@@ -1003,6 +1447,16 @@ onMounted(async () => {
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Products</h2>
         <div class="flex flex-wrap gap-2">
+          <UButton
+            v-if="canManageProducts && selectedProductCount > 0"
+            color="error"
+            variant="soft"
+            icon="i-lucide-trash-2"
+            :loading="bulkDeletingProducts"
+            @click="openBulkDeleteProductsConfirm"
+          >
+            Delete selected ({{ selectedProductCount }})
+          </UButton>
           <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" :loading="isLoading" @click="reloadProductsNow">
             Refresh
           </UButton>
@@ -1010,12 +1464,24 @@ onMounted(async () => {
       </div>
 
       <div class="mb-4 grid gap-3 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <UInput v-model="query" icon="i-lucide-search" placeholder="Search name / SKU / barcode" class="min-w-0 xl:col-span-2" />
-        <USelect v-model="filterCategoryIdModel" :items="filterCategoryItems" placeholder="Category" class="min-w-0" />
-        <USelect v-model="filterStatusModel" :items="statusFilterItems" placeholder="Status" class="min-w-0" />
-        <UInput v-model="filterMinSale" type="number" placeholder="Min sale (PKR)" class="min-w-0" />
-        <UInput v-model="filterMaxSale" type="number" placeholder="Max sale (PKR)" class="min-w-0" />
-        <USelect v-model="sortByModel" :items="sortSelectItems" placeholder="Sort" class="min-w-0" />
+        <UiLabeledField label="Search" html-for="prd-filter-search" class="min-w-0 xl:col-span-2">
+          <UInput id="prd-filter-search" v-model="query" icon="i-lucide-search" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Category" class="min-w-0">
+          <UiSearchableSelect v-model="filterCategoryIdModel" :items="filterCategoryItems" placeholder="Search category…" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Status" class="min-w-0">
+          <UiSearchableSelect v-model="filterStatusModel" :items="statusFilterItems" placeholder="Search status…" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Min sale (Rs)" html-for="prd-min-sale" class="min-w-0">
+          <UInput id="prd-min-sale" v-model="filterMinSale" type="number" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Max sale (Rs)" html-for="prd-max-sale" class="min-w-0">
+          <UInput id="prd-max-sale" v-model="filterMaxSale" type="number" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Sort" class="min-w-0">
+          <UiSearchableSelect v-model="sortByModel" :items="sortSelectItems" placeholder="Search sort…" class="w-full" />
+        </UiLabeledField>
       </div>
       <div class="mb-4 flex flex-wrap gap-2">
         <UButton icon="i-lucide-filter" :loading="isLoading" @click="reloadProductsNow">Apply filters</UButton>
@@ -1028,6 +1494,9 @@ onMounted(async () => {
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>
+              <th v-if="canManageProducts" class="w-10 px-3 py-2">
+                <UCheckbox :model-value="allProductsOnPageSelected" @update:model-value="toggleSelectAllProducts" />
+              </th>
               <th class="px-3 py-2">Name</th>
               <th class="px-3 py-2">Image</th>
               <th class="px-3 py-2">SKU</th>
@@ -1046,6 +1515,12 @@ onMounted(async () => {
               class="border-b border-slate-100 dark:border-slate-800"
               :class="{ 'bg-slate-50/90 dark:bg-slate-950/40': !product.is_active }"
             >
+              <td v-if="canManageProducts" class="px-3 py-2" @click.stop>
+                <UCheckbox
+                  :model-value="selectedProductIds.has(product.id)"
+                  @update:model-value="(v: boolean) => setProductSelected(product.id, v)"
+                />
+              </td>
               <td class="px-3 py-2 font-medium">{{ product.name }}</td>
               <td class="px-3 py-2">
                 <img
@@ -1059,7 +1534,7 @@ onMounted(async () => {
               <td class="px-3 py-2">{{ product.sku }}</td>
               <td class="px-3 py-2">{{ product.barcode }}</td>
               <td class="px-3 py-2">{{ product.category_name || '-' }}</td>
-              <td class="px-3 py-2">PKR {{ Number(product.sale_price).toLocaleString() }}</td>
+              <td class="px-3 py-2">Rs {{ Number(product.sale_price).toLocaleString() }}</td>
               <td class="px-3 py-2">{{ product.tax_rate }}</td>
               <td class="px-3 py-2">
                 <UBadge :color="product.is_active ? 'success' : 'neutral'" variant="soft">
@@ -1082,14 +1557,50 @@ onMounted(async () => {
                   <UButton size="xs" color="neutral" variant="soft" icon="i-lucide-pencil" @click="openEditProduct(product)">
                     Edit
                   </UButton>
+                  <UButton
+                    v-if="canManageProducts"
+                    size="xs"
+                    color="error"
+                    variant="soft"
+                    icon="i-lucide-trash-2"
+                    :loading="deletingProductId === product.id"
+                    @click="openDeleteProductConfirm(product)"
+                  >
+                    Delete
+                  </UButton>
                 </div>
               </td>
             </tr>
-            <tr v-if="!products.length">
-              <td class="px-3 py-4 text-slate-500" colspan="9">No products found.</td>
+            <tr v-if="!products.length && !isLoading">
+              <td class="px-3 py-4 text-slate-500" :colspan="canManageProducts ? 10 : 9">No products found.</td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div
+        v-if="productTotal > 0"
+        class="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600 dark:text-slate-400"
+      >
+        <span>Showing {{ productRangeStart }}–{{ productRangeEnd }} of {{ productTotal }}</span>
+        <div class="flex items-center gap-2">
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-chevron-left"
+            :disabled="productPage <= 1 || isLoading"
+            @click="setProductPage(productPage - 1)"
+          />
+          <span class="tabular-nums">Page {{ productPage }} / {{ productPageCount }}</span>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-chevron-right"
+            :disabled="productPage >= productPageCount || isLoading"
+            @click="setProductPage(productPage + 1)"
+          />
+        </div>
       </div>
     </UCard>
 
@@ -1111,12 +1622,12 @@ onMounted(async () => {
           </div>
           <div class="flex min-w-0 flex-col gap-1.5">
             <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-cat-edit-dept">Department</label>
-            <USelect
+            <UiSearchableSelect
               id="prd-cat-edit-dept"
               v-model="editCategoryDepartmentSelectModel"
               class="w-full"
               :items="categoryDepartmentEditItems"
-              placeholder="Department"
+              placeholder="Search department…"
             />
           </div>
           <div class="mt-2 flex justify-end gap-2">
@@ -1161,7 +1672,7 @@ onMounted(async () => {
           </div>
           <div class="flex min-w-0 flex-col gap-1.5">
             <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-category">Category</label>
-            <USelect id="prd-edit-category" v-model="editCategorySelectModel" class="w-full" :items="categorySelectItems" placeholder="Category" />
+            <UiSearchableSelect id="prd-edit-category" v-model="editCategorySelectModel" class="w-full" :items="categorySelectItems" placeholder="Search category…" />
           </div>
 
           <div class="sm:col-span-2">
@@ -1201,6 +1712,49 @@ onMounted(async () => {
             <UButton color="neutral" variant="soft" @click="isEditModalOpen = false">Cancel</UButton>
             <UButton icon="i-lucide-save" @click="updateProduct">Update Product</UButton>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="deleteConfirmOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+      @click.self="closeDeleteConfirm"
+    >
+      <div
+        class="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl dark:bg-slate-900"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-confirm-title"
+        aria-describedby="delete-confirm-desc"
+      >
+        <div class="mb-4 flex items-start gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-950/50 dark:text-red-400"
+          >
+            <UIcon name="i-lucide-trash-2" class="h-5 w-5" />
+          </div>
+          <div>
+            <h3 id="delete-confirm-title" class="text-lg font-semibold text-slate-900 dark:text-slate-100">
+              {{ deleteConfirmTitle }}
+            </h3>
+            <p id="delete-confirm-desc" class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+              {{ deleteConfirmDescription }}
+            </p>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="soft" :disabled="deleteConfirmLoading" @click="closeDeleteConfirm">
+            Cancel
+          </UButton>
+          <UButton
+            color="error"
+            icon="i-lucide-trash-2"
+            :loading="deleteConfirmLoading"
+            @click="confirmDeleteAction"
+          >
+            Delete
+          </UButton>
         </div>
       </div>
     </div>

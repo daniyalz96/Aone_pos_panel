@@ -96,10 +96,18 @@ onMounted(async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Create Customer</h2>
         <div class="grid gap-3">
-          <UInput v-model="createForm.name" placeholder="Customer name" />
-          <UInput v-model="createForm.phone" placeholder="Phone" />
-          <UInput v-model="createForm.email" placeholder="Email" />
-          <UCheckbox v-model="createForm.isWalkIn" label="Walk-in customer" />
+          <UiLabeledField label="Name" html-for="cust-create-name" required>
+            <UInput id="cust-create-name" v-model="createForm.name" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Phone" html-for="cust-create-phone">
+            <UInput id="cust-create-phone" v-model="createForm.phone" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Email" html-for="cust-create-email">
+            <UInput id="cust-create-email" v-model="createForm.email" type="email" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Walk-in customer">
+            <UCheckbox v-model="createForm.isWalkIn" />
+          </UiLabeledField>
           <UButton icon="i-lucide-user-plus" @click="createCustomer">Save Customer</UButton>
         </div>
       </UCard>
@@ -107,13 +115,19 @@ onMounted(async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Adjust Loyalty Points</h2>
         <div class="grid gap-3">
-          <USelect
-            v-model="loyaltyForm.customerId"
-            :items="customers.map((c) => ({ label: `${c.name} (${c.loyalty_points} pts)`, value: c.id }))"
-            placeholder="Select customer"
-          />
-          <UInput v-model.number="loyaltyForm.pointsDelta" type="number" placeholder="Points delta (+/-)" />
-          <UInput v-model="loyaltyForm.note" placeholder="Note" />
+          <UiLabeledField label="Customer">
+            <UiSearchableSelect
+              v-model="loyaltyForm.customerId"
+              :items="customers.map((c) => ({ label: `${c.name} (${c.loyalty_points} pts)`, value: c.id }))"
+              placeholder="Search customer…"
+            />
+          </UiLabeledField>
+          <UiLabeledField label="Points delta" html-for="cust-loyalty-delta">
+            <UInput id="cust-loyalty-delta" v-model.number="loyaltyForm.pointsDelta" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Note" html-for="cust-loyalty-note">
+            <UInput id="cust-loyalty-note" v-model="loyaltyForm.note" class="w-full" />
+          </UiLabeledField>
           <UButton color="secondary" icon="i-lucide-award" @click="updateLoyalty">Update Loyalty</UButton>
         </div>
       </UCard>
@@ -122,8 +136,10 @@ onMounted(async () => {
     <UCard>
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Customers</h2>
-        <div class="flex gap-2">
-          <UInput v-model="search" icon="i-lucide-search" placeholder="Search customers" />
+        <div class="flex flex-wrap items-end gap-2">
+          <UiLabeledField label="Search" html-for="cust-search" class="min-w-[12rem] flex-1">
+            <UInput id="cust-search" v-model="search" icon="i-lucide-search" class="w-full" />
+          </UiLabeledField>
           <UButton color="neutral" variant="soft" icon="i-lucide-refresh-cw" @click="loadCustomers">Refresh</UButton>
         </div>
       </div>

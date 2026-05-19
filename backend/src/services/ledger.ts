@@ -65,3 +65,23 @@ export async function postJournalEntry(args: PostJournalArgs) {
 
   return entryId;
 }
+
+/** Remove GL entry for a source (e.g. when an expense is deleted or re-posted). */
+export async function deleteJournalEntryBySource(
+  client: PoolClient,
+  sourceType: string,
+  sourceId: string,
+): Promise<boolean> {
+  const existing = await client.query(
+    `SELECT id FROM journal_entries WHERE source_type = $1 AND source_id = $2`,
+    [sourceType, sourceId],
+  );
+  if (!existing.rowCount) {
+    return false;
+  }
+
+  const entryId = existing.rows[0].id as string;
+  await client.query(`DELETE FROM journal_lines WHERE journal_entry_id = $1`, [entryId]);
+  await client.query(`DELETE FROM journal_entries WHERE id = $1`, [entryId]);
+  return true;
+}

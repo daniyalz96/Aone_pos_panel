@@ -8,6 +8,7 @@ type SalesTrendRow = {
   invoice_count: number
   total_sales: number | string
   total_tax: number | string
+  gross_profit?: number | string
 }
 
 type TopItemRow = {
@@ -22,7 +23,8 @@ type ProfitMarginRow = {
   margin_percent: number | string
 }
 
-type WeekBarPoint = { label: string; primary: number; secondary: number }
+type WeekSalesProfitPoint = { label: string; sales: number; profit: number }
+type TopProfitProductPoint = { productName: string; profit: number }
 
 type DashboardSummary = {
   today_sales: number | string
@@ -32,6 +34,12 @@ type DashboardSummary = {
   pending_payment_amount: number | string
   pending_payment_invoice_count: number
   low_stock_item_count: number
+  today_expenses_total?: number | string
+  today_expenses_personal?: number | string
+  today_expenses_business?: number | string
+  today_expenses_charity?: number | string
+  yesterday_expenses_total?: number | string
+  today_net_sales_minus_expenses?: number | string
 }
 
 type StatCard = {
@@ -51,7 +59,7 @@ const kpiLoading = ref(false)
 const kpiError = ref(false)
 
 function fmtPkr(n: number) {
-  return `PKR ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+  return `Rs ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
 
 function pctVsYesterday(today: number, yesterday: number) {
@@ -79,7 +87,8 @@ const quickStats = computed<StatCard[]>(() => {
       { title: 'Today Sales', value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: true },
       { title: 'Transactions', value: '…', delta: 'Loading…', icon: 'i-lucide-receipt-text', positive: true },
       { title: 'Pending Payments', value: '…', delta: 'Loading…', icon: 'i-lucide-circle-alert', positive: false },
-      { title: 'Low Stock Items', value: '…', delta: 'Loading…', icon: 'i-lucide-box', positive: false, to: '/restock' }
+      { title: 'Low Stock Items', value: '…', delta: 'Loading…', icon: 'i-lucide-box', positive: false, to: '/restock' },
+      { title: "Today's Expenses", value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
     ]
   }
 
@@ -88,7 +97,8 @@ const quickStats = computed<StatCard[]>(() => {
       { title: 'Today Sales', value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false },
       { title: 'Transactions', value: '—', delta: 'Could not load', icon: 'i-lucide-receipt-text', positive: false },
       { title: 'Pending Payments', value: '—', delta: 'Could not load', icon: 'i-lucide-circle-alert', positive: false },
-      { title: 'Low Stock Items', value: '—', delta: 'Could not load', icon: 'i-lucide-box', positive: false, to: '/restock' }
+      { title: 'Low Stock Items', value: '—', delta: 'Could not load', icon: 'i-lucide-box', positive: false, to: '/restock' },
+      { title: "Today's Expenses", value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
     ]
   }
 
@@ -136,7 +146,25 @@ const quickStats = computed<StatCard[]>(() => {
       icon: 'i-lucide-box',
       positive: lowStock === 0,
       to: '/restock'
+    },
+    {
+      title: "Today's Expenses",
+      value: fmtPkr(Number(s.today_expenses_total ?? 0)),
+      delta: `Net ${fmtPkr(Number(s.today_net_sales_minus_expenses ?? todaySales - Number(s.today_expenses_total ?? 0)))}`,
+      icon: 'i-lucide-wallet',
+      positive: Number(s.today_expenses_total ?? 0) <= todaySales,
+      to: '/expenses'
     }
+  ]
+})
+
+const expenseTypeCards = computed(() => {
+  const s = kpiSummary.value
+  if (!s) return []
+  return [
+    { label: 'Personal', value: Number(s.today_expenses_personal ?? 0), icon: 'i-lucide-shopping-basket' },
+    { label: 'Business', value: Number(s.today_expenses_business ?? 0), icon: 'i-lucide-building-2' },
+    { label: 'Charity', value: Number(s.today_expenses_charity ?? 0), icon: 'i-lucide-heart-handshake' }
   ]
 })
 
@@ -149,23 +177,23 @@ const DEMO_HOURLY = [
   { label: '14:00', amount: 24_100 }
 ]
 
-const DEMO_WEEK: WeekBarPoint[] = [
-  { label: 'Sat', primary: 72_400, secondary: 8_200 },
-  { label: 'Sun', primary: 68_100, secondary: 7_800 },
-  { label: 'Mon', primary: 91_200, secondary: 10_400 },
-  { label: 'Tue', primary: 84_000, secondary: 9_600 },
-  { label: 'Wed', primary: 96_500, secondary: 11_100 },
-  { label: 'Thu', primary: 88_300, secondary: 10_000 },
-  { label: 'Fri', primary: 102_000, secondary: 11_800 }
+const DEMO_WEEK_SALES_PROFIT: WeekSalesProfitPoint[] = [
+  { label: 'Sat', sales: 72_400, profit: 18_200 },
+  { label: 'Sun', sales: 68_100, profit: 16_800 },
+  { label: 'Mon', sales: 91_200, profit: 24_400 },
+  { label: 'Tue', sales: 84_000, profit: 21_600 },
+  { label: 'Wed', sales: 96_500, profit: 26_100 },
+  { label: 'Thu', sales: 88_300, profit: 22_000 },
+  { label: 'Fri', sales: 102_000, profit: 28_800 }
 ]
 
-const DEMO_PROFIT_LEADERS = [
-  { label: 'Basmati 5kg', value: 18_400 },
-  { label: 'Cooking oil 1L', value: 14_200 },
-  { label: 'Whole milk 1L', value: 11_800 },
-  { label: 'Sugar 2kg', value: 9_600 },
-  { label: 'Tea 950g', value: 8_100 },
-  { label: 'Laundry soap', value: 6_900 }
+const DEMO_TOP_PROFIT_PRODUCTS: TopProfitProductPoint[] = [
+  { productName: 'Basmati 5kg', profit: 18_400 },
+  { productName: 'Cooking oil 1L', profit: 14_200 },
+  { productName: 'Whole milk 1L', profit: 11_800 },
+  { productName: 'Sugar 2kg', profit: 9_600 },
+  { productName: 'Tea 950g', profit: 8_100 },
+  { productName: 'Laundry soap', profit: 6_900 }
 ]
 
 const DEMO_MONTHLY_PROFIT = [
@@ -177,7 +205,7 @@ const DEMO_MONTHLY_PROFIT = [
   { label: 'May', value: 55_400 }
 ]
 
-/** Demo pie slices: monthly invoice totals (PKR) — shown when analytics unavailable */
+/** Demo pie slices: monthly invoice totals (Rs) — shown when analytics unavailable */
 const DEMO_MONTHLY_SALES_PIE = [
   { name: 'Dec', y: 380_000 },
   { name: 'Jan', y: 442_000 },
@@ -196,17 +224,10 @@ const analyticsLoading = ref(false)
 const analyticsLive = ref(false)
 
 const hourlySeries = ref<{ label: string; amount: number }[]>([...DEMO_HOURLY])
-const weeklySeries = ref<WeekBarPoint[]>([...DEMO_WEEK])
-const profitLeaderSeries = ref<{ label: string; value: number }[]>([...DEMO_PROFIT_LEADERS])
+const weeklySalesProfitSeries = ref<WeekSalesProfitPoint[]>([...DEMO_WEEK_SALES_PROFIT])
+const topProfitProducts = ref<TopProfitProductPoint[]>([...DEMO_TOP_PROFIT_PRODUCTS])
 const monthlyProfitSeries = ref<{ label: string; value: number }[]>([...DEMO_MONTHLY_PROFIT])
 const monthlySalesPieSeries = ref<{ name: string; y: number }[]>([...DEMO_MONTHLY_SALES_PIE])
-
-const maxHourlyAmount = computed(() => Math.max(1, ...hourlySeries.value.map((h) => h.amount)))
-
-function hourlyBarHeight(amount: number) {
-  const h = Math.round((amount / maxHourlyAmount.value) * 108)
-  return `${Math.max(6, h)}px`
-}
 
 function startOfDay(d: Date) {
   const x = new Date(d)
@@ -247,13 +268,13 @@ function monthlySalesRowsToPie(rows: SalesTrendRow[]): { name: string; y: number
   }))
 }
 
-function padLastDays(rows: SalesTrendRow[], dayCount = 7): WeekBarPoint[] {
+function padLastDaysSalesProfit(rows: SalesTrendRow[], dayCount = 7): WeekSalesProfitPoint[] {
   const map = new Map<string, SalesTrendRow>()
   for (const r of rows) {
     const key = r.period.slice(0, 10)
     map.set(key, r)
   }
-  const out: WeekBarPoint[] = []
+  const out: WeekSalesProfitPoint[] = []
   const today = new Date()
   for (let i = dayCount - 1; i >= 0; i--) {
     const d = new Date(today)
@@ -263,8 +284,8 @@ function padLastDays(rows: SalesTrendRow[], dayCount = 7): WeekBarPoint[] {
     const row = map.get(key)
     out.push({
       label: d.toLocaleDateString(undefined, { weekday: 'short' }),
-      primary: row ? Number(row.total_sales) : 0,
-      secondary: row ? Number(row.total_tax) : 0
+      sales: row ? Number(row.total_sales) : 0,
+      profit: row ? Number(row.gross_profit ?? 0) : 0
     })
   }
   return out
@@ -278,8 +299,8 @@ async function loadAnalytics() {
   if (!canViewAnalytics.value) {
     analyticsLive.value = false
     hourlySeries.value = [...DEMO_HOURLY]
-    weeklySeries.value = [...DEMO_WEEK]
-    profitLeaderSeries.value = [...DEMO_PROFIT_LEADERS]
+    weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
+    topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
     monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
     monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
     return
@@ -329,27 +350,27 @@ async function loadAnalytics() {
     }
 
     if (weekRes.status === 'fulfilled') {
-      weeklySeries.value = padLastDays(weekRes.value, 7)
+      weeklySalesProfitSeries.value = padLastDaysSalesProfit(weekRes.value, 7)
       anyLive = true
     } else {
-      weeklySeries.value = [...DEMO_WEEK]
+      weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
     }
 
     if (topRes.status === 'fulfilled') {
       anyLive = true
       const topItems = topRes.value
-      profitLeaderSeries.value = [...topItems]
+      topProfitProducts.value = [...topItems]
         .map((r) => ({
-          label: String(r.product_name),
-          value: Number(r.gross_profit)
+          productName: String(r.product_name ?? '').trim() || 'Unknown product',
+          profit: Number(r.gross_profit)
         }))
-        .sort((a, b) => b.value - a.value)
+        .sort((a, b) => b.profit - a.profit)
         .slice(0, 6)
-      if (!profitLeaderSeries.value.length) {
-        profitLeaderSeries.value = [...DEMO_PROFIT_LEADERS]
+      if (!topProfitProducts.value.length) {
+        topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
       }
     } else {
-      profitLeaderSeries.value = [...DEMO_PROFIT_LEADERS]
+      topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
     }
 
     if (marginRes.status === 'fulfilled') {
@@ -385,8 +406,8 @@ async function loadAnalytics() {
   } catch {
     analyticsLive.value = false
     hourlySeries.value = [...DEMO_HOURLY]
-    weeklySeries.value = [...DEMO_WEEK]
-    profitLeaderSeries.value = [...DEMO_PROFIT_LEADERS]
+    weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
+    topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
     monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
     monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
   } finally {
@@ -421,7 +442,7 @@ watch(canViewAnalytics, (ok) => {
 
 <template>
   <section class="space-y-6">
-    <div class="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div class="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
       <UiMetricCard
         v-for="stat in quickStats"
         :key="stat.title"
@@ -432,6 +453,20 @@ watch(canViewAnalytics, (ok) => {
         :positive="stat.positive"
         :to="stat.to"
       />
+    </div>
+
+    <div v-if="expenseTypeCards.length" class="grid gap-3 sm:grid-cols-3">
+      <UCard v-for="card in expenseTypeCards" :key="card.label">
+        <div class="flex items-center gap-3">
+          <div class="rounded-lg bg-amber-50 p-2 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            <UIcon :name="card.icon" class="size-5" />
+          </div>
+          <div>
+            <p class="text-xs text-slate-500">Today · {{ card.label }}</p>
+            <p class="text-lg font-semibold text-slate-900 dark:text-slate-100">{{ fmtPkr(card.value) }}</p>
+          </div>
+        </div>
+      </UCard>
     </div>
 
     <div class="grid gap-6 xl:grid-cols-3">
@@ -449,17 +484,14 @@ watch(canViewAnalytics, (ok) => {
             <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
           </div>
         </div>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-6">
-          <div v-for="point in hourlySeries" :key="point.label" class="space-y-2">
-            <div class="flex h-36 items-end rounded-lg bg-slate-100 p-2 dark:bg-slate-800">
-              <div
-                class="w-full rounded-md bg-emerald-500/80 transition-[height] duration-300 dark:bg-emerald-400/75"
-                :style="{ height: hourlyBarHeight(point.amount) }"
-              />
+        <ClientOnly>
+          <DashboardHourlySalesChart :points="hourlySeries" />
+          <template #fallback>
+            <div class="flex min-h-[300px] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+              Loading chart…
             </div>
-            <p class="text-center text-xs text-slate-500 dark:text-slate-400">{{ point.label }}</p>
-          </div>
-        </div>
+          </template>
+        </ClientOnly>
       </UCard>
 
       <!--
@@ -468,15 +500,15 @@ watch(canViewAnalytics, (ok) => {
         <div class="mt-4 space-y-3">
           <div class="rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
             <p class="text-sm font-medium text-slate-800 dark:text-slate-100">Ali Raza</p>
-            <p class="text-xs text-slate-500 dark:text-slate-400">42 sales • PKR 38,200</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">42 sales • Rs 38,200</p>
           </div>
           <div class="rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
             <p class="text-sm font-medium text-slate-800 dark:text-slate-100">Sana Iqbal</p>
-            <p class="text-xs text-slate-500 dark:text-slate-400">37 sales • PKR 34,500</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">37 sales • Rs 34,500</p>
           </div>
           <div class="rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
             <p class="text-sm font-medium text-slate-800 dark:text-slate-100">Aamir Khan</p>
-            <p class="text-xs text-slate-500 dark:text-slate-400">31 sales • PKR 29,840</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">31 sales • Rs 29,840</p>
           </div>
         </div>
       </UCard>
@@ -509,36 +541,52 @@ watch(canViewAnalytics, (ok) => {
       </UCard>
     </div>
 
+
     <div class="grid gap-6 xl:grid-cols-3">
       <UCard class="xl:col-span-2">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">7-day sales &amp; tax</h2>
+            <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">7-day sales &amp; profit</h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Paired bars: total sales (emerald) vs tax collected (amber)
+              Posted sales vs gross profit (revenue ex-tax minus cost) · last 7 days
             </p>
           </div>
-          <UBadge v-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
-          <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+          <div class="flex items-center gap-2">
+            <UBadge v-if="analyticsLoading" color="neutral" variant="soft">Loading…</UBadge>
+            <UBadge v-else-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
+            <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+          </div>
         </div>
-        <DashboardGroupedMetricBars
-          :points="weeklySeries"
-          primary-legend="Sales (PKR)"
-          secondary-legend="Tax (PKR)"
-          :peak-px="128"
-        />
+        <ClientOnly>
+          <DashboardWeeklySalesProfitChart :points="weeklySalesProfitSeries" />
+          <template #fallback>
+            <div class="flex min-h-[320px] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+              Loading chart…
+            </div>
+          </template>
+        </ClientOnly>
       </UCard>
 
       <UCard>
         <div class="mb-4 flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Top profit SKUs</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">Gross profit · last 30 days</p>
+            <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Top profit products</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Gross profit by product name · last 30 days</p>
           </div>
-          <UBadge v-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
-          <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+          <div class="flex items-center gap-2">
+            <UBadge v-if="analyticsLoading" color="neutral" variant="soft">Loading…</UBadge>
+            <UBadge v-else-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
+            <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+          </div>
         </div>
-        <DashboardHorizontalRankedBars :items="profitLeaderSeries" value-prefix="PKR " />
+        <ClientOnly>
+          <DashboardTopProfitProductsChart :products="topProfitProducts" />
+          <template #fallback>
+            <div class="flex min-h-[260px] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+              Loading chart…
+            </div>
+          </template>
+        </ClientOnly>
       </UCard>
     </div>
 
@@ -548,10 +596,20 @@ watch(canViewAnalytics, (ok) => {
           <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Monthly gross profit</h2>
           <p class="text-xs text-slate-500 dark:text-slate-400">From posted invoice lines minus product cost · recent months</p>
         </div>
-        <UBadge v-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
-        <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+        <div class="flex items-center gap-2">
+          <UBadge v-if="analyticsLoading" color="neutral" variant="soft">Loading…</UBadge>
+          <UBadge v-else-if="analyticsLive" color="primary" variant="soft">Live</UBadge>
+          <UBadge v-else color="neutral" variant="subtle">Demo</UBadge>
+        </div>
       </div>
-      <DashboardMiniTrendBars :points="monthlyProfitSeries" :peak-px="112" />
+      <ClientOnly>
+        <DashboardMonthlyProfitChart :points="monthlyProfitSeries" />
+        <template #fallback>
+          <div class="flex min-h-[280px] items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+            Loading chart…
+          </div>
+        </template>
+      </ClientOnly>
       <div v-if="canViewAnalytics" class="mt-4 flex justify-end border-t border-slate-100 pt-3 dark:border-slate-800">
         <NuxtLink class="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300" to="/reports">
           Open detailed reports →

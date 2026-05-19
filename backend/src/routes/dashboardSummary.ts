@@ -61,8 +61,24 @@ export async function handleDashboardSummary(req: Request, res: Response) {
       AND ($2::uuid IS NULL OR i.posted_by = $2::uuid)
   `;
 
+  const expenseRangeSql = `
+    SELECT COALESCE(SUM(amount), 0)::numeric(14,2) AS total
+    FROM expenses
+    WHERE expense_date >= $1::date AND expense_date <= $2::date
+  `;
+
+  const expenseByTypeSql = `
+    SELECT
+      COALESCE(SUM(amount) FILTER (WHERE expense_type = 'personal'), 0)::numeric(14,2) AS personal,
+      COALESCE(SUM(amount) FILTER (WHERE expense_type = 'business'), 0)::numeric(14,2) AS business,
+      COALESCE(SUM(amount) FILTER (WHERE expense_type = 'charity'), 0)::numeric(14,2) AS charity,
+      COALESCE(SUM(amount), 0)::numeric(14,2) AS total
+    FROM expenses
+    WHERE expense_date >= $1::date AND expense_date <= $2::date
+  `;
+
   try {
-    const [todayRow, yesterdayRow, pendingRow, lowStockRow] = await Promise.all([
+    const [todayRow, yesterdayRow, pendingRow, lowStockRow, todayExpRow, yesterdayExpRow] = await Promise.all([
       pool.query(salesInvoiceSql, rangeParams(todayStart, now)),
       pool.query(salesInvoiceSql, rangeParams(yesterdayStart, yesterdayEnd)),
       pool.query(pendingSql, [branchId, cashierId]),
@@ -96,11 +112,18 @@ export async function handleDashboardSummary(req: Request, res: Response) {
             `,
             [threshold],
           ),
+      pool.query(expenseByTypeSql, [todayStart, now]),
+      pool.query(expenseRangeSql, [yesterdayStart, yesterdayEnd]),
     ]);
 
     const t = todayRow.rows[0];
     const y = yesterdayRow.rows[0];
     const p = pendingRow.rows[0];
+    const te = todayExpRow.rows[0];
+    const ye = yesterdayExpRow.rows[0];
+
+    const todayExpTotal = Number(te.total);
+    const todaySales = Number(t.net_sales);
 
     return res.json({
       today_sales: t.net_sales,
@@ -110,6 +133,12 @@ export async function handleDashboardSummary(req: Request, res: Response) {
       pending_payment_amount: p.outstanding,
       pending_payment_invoice_count: p.invoice_count,
       low_stock_item_count: lowStockRow.rows[0].c,
+      today_expenses_total: todayExpTotal,
+      today_expenses_personal: Number(te.personal),
+      today_expenses_business: Number(te.business),
+      today_expenses_charity: Number(te.charity),
+      yesterday_expenses_total: Number(ye.total),
+      today_net_sales_minus_expenses: Number((todaySales - todayExpTotal).toFixed(2)),
     });
   } catch (e) {
     console.error(e);

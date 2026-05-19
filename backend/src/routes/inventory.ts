@@ -7,6 +7,20 @@ import { createAuditLog } from "../utils/audit.js";
 
 const router = Router();
 
+const paginatedQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(500).optional(),
+  offset: z.coerce.number().min(0).optional().default(0),
+  withTotal: z.enum(["true", "false"]).optional(),
+  q: z.string().optional(),
+});
+
+function searchClauseForProducts(alias = "p", categoryAlias = "c", departmentAlias = "d"): string {
+  return `(
+    ${alias}.name ILIKE $SEARCH OR ${alias}.sku ILIKE $SEARCH OR ${alias}.barcode ILIKE $SEARCH
+    OR ${categoryAlias}.name ILIKE $SEARCH OR ${departmentAlias}.name ILIKE $SEARCH
+  )`;
+}
+
 async function applyStockMovement(params: {
   productId: string;
   movementType: "stock_in" | "stock_out" | "sale_out" | "return_in" | "adjustment";
@@ -45,9 +59,6 @@ async function applyStockMovement(params: {
     );
     const currentQty = Number(currentResult.rows[0].qty_on_hand);
     const nextQty = currentQty + delta;
-    if (nextQty < 0) {
-      throw new Error("Insufficient stock");
-    }
 
     await client.query(
       `
@@ -92,9 +103,6 @@ async function applyStockMovement(params: {
       );
       const branchCurrentQty = Number(branchBalance.rows[0].qty_on_hand);
       const branchNextQty = branchCurrentQty + delta;
-      if (branchNextQty < 0) {
-        throw new Error("Insufficient branch stock");
-      }
 
       await client.query(
         `
@@ -267,6 +275,12 @@ router.post("/stock-out", requireAuth, requirePermission("manage_inventory"), as
 });
 
 router.get("/balances", requireAuth, async (req, res) => {
+  const parsed = paginatedQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid query params", errors: parsed.error.flatten() });
+  }
+  const pagination = parsed.data;
+
   const branchId = req.query.branchId as string | undefined;
   const departmentId =
     typeof req.query.departmentId === "string" && /^[0-9a-f-]{36}$/i.test(req.query.departmentId)
@@ -314,6 +328,14 @@ router.get("/balances", requireAuth, async (req, res) => {
       `,
       params,
     );
+    if (pagination.withTotal === "true" && pagination.limit !== undefined) {
+      return res.json({
+        items: branchResult.rows,
+        total: branchResult.rows.length,
+        limit: pagination.limit,
+        offset: pagination.offset,
+      });
+    }
     return res.json(branchResult.rows);
   }
 
@@ -322,6 +344,62 @@ router.get("/balances", requireAuth, async (req, res) => {
   if (departmentId) {
     params.push(departmentId);
     deptClause = `AND c.department_id = $${params.length}`;
+  }
+
+  const qTrim = pagination.q?.trim();
+  let searchClause = "";
+  if (qTrim) {
+    params.push(`%${qTrim}%`);
+    const searchParam = `$${params.length}`;
+    searchClause = `AND ${searchClauseForProducts().replace(/\$SEARCH/g, searchParam)}`;
+  }
+
+  const whereBase = `
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN departments d ON d.id = c.department_id
+      LEFT JOIN inventory_balances inv ON inv.product_id = p.id
+      WHERE p.is_active = TRUE
+        ${deptClause}
+        ${searchClause}
+  `;
+
+  if (pagination.withTotal === "true" && pagination.limit !== undefined) {
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total ${whereBase}`, params);
+    const total = countResult.rows[0]?.total ?? 0;
+
+    const listParams = [...params, pagination.limit, pagination.offset];
+    const limitParam = `$${params.length + 1}`;
+    const offsetParam = `$${params.length + 2}`;
+
+    const result = await pool.query(
+      `
+        SELECT
+          p.id AS product_id,
+          p.name,
+          p.sku,
+          p.barcode,
+          p.cost_price,
+          p.sale_price,
+          c.id AS category_id,
+          c.name AS category_name,
+          d.id AS department_id,
+          d.name AS department_name,
+          COALESCE(inv.qty_on_hand, 0) AS qty_on_hand,
+          inv.opening_balance AS opening_balance
+        ${whereBase}
+        ORDER BY p.name ASC
+        LIMIT ${limitParam}
+        OFFSET ${offsetParam}
+      `,
+      listParams,
+    );
+    return res.json({
+      items: result.rows,
+      total,
+      limit: pagination.limit,
+      offset: pagination.offset,
+    });
   }
 
   const result = await pool.query(
@@ -339,12 +417,7 @@ router.get("/balances", requireAuth, async (req, res) => {
         d.name AS department_name,
         COALESCE(inv.qty_on_hand, 0) AS qty_on_hand,
         inv.opening_balance AS opening_balance
-      FROM products p
-      LEFT JOIN categories c ON c.id = p.category_id
-      LEFT JOIN departments d ON d.id = c.department_id
-      LEFT JOIN inventory_balances inv ON inv.product_id = p.id
-      WHERE p.is_active = TRUE
-        ${deptClause}
+      ${whereBase}
       ORDER BY p.name ASC
     `,
     params,
@@ -363,8 +436,8 @@ router.patch("/balances/:productId", requireAuth, requirePermission("manage_inve
 
   const schema = z
     .object({
-      qtyOnHand: z.coerce.number().min(0).optional(),
-      openingBalance: z.coerce.number().min(0).optional(),
+      qtyOnHand: z.coerce.number().optional(),
+      openingBalance: z.coerce.number().optional(),
       reason: z.string().max(200).optional(),
     })
     .refine((d) => d.qtyOnHand !== undefined || d.openingBalance !== undefined, {
@@ -435,7 +508,7 @@ router.patch("/balances/:productId", requireAuth, requirePermission("manage_inve
     if (qtyValueChanged) {
       targetQty = reqQty!;
     } else if (currentOpening !== null && openingRecordChanged) {
-      targetQty = Math.max(0, Number((currentQty + (reqOpening! - currentOpening)).toFixed(3)));
+      targetQty = Number((currentQty + (reqOpening! - currentOpening)).toFixed(3));
     } else if (currentOpening === null && openingRecordChanged) {
       targetQty = currentQty;
     } else if (qtyInRequest && reqQty !== undefined) {
@@ -498,6 +571,12 @@ router.patch("/balances/:productId", requireAuth, requirePermission("manage_inve
 });
 
 router.get("/low-stock", requireAuth, async (req, res) => {
+  const parsed = paginatedQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid query params", errors: parsed.error.flatten() });
+  }
+  const pagination = parsed.data;
+
   const threshold = Math.max(0, Number(req.query.threshold ?? 5));
   const branchId = req.query.branchId as string | undefined;
   if (branchId) {
@@ -520,7 +599,49 @@ router.get("/low-stock", requireAuth, async (req, res) => {
       `,
       [threshold, branchId],
     );
+    if (pagination.withTotal === "true" && pagination.limit !== undefined) {
+      return res.json({
+        items: branchResult.rows,
+        total: branchResult.rows.length,
+        limit: pagination.limit,
+        offset: pagination.offset,
+      });
+    }
     return res.json(branchResult.rows);
+  }
+
+  const whereBase = `
+      FROM products p
+      LEFT JOIN inventory_balances ib ON ib.product_id = p.id
+      WHERE p.is_active = TRUE AND COALESCE(ib.qty_on_hand, 0) <= GREATEST(p.low_stock_threshold, $1)
+  `;
+
+  if (pagination.withTotal === "true" && pagination.limit !== undefined) {
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total ${whereBase}`, [threshold]);
+    const total = countResult.rows[0]?.total ?? 0;
+
+    const result = await pool.query(
+      `
+        SELECT
+          p.id AS product_id,
+          p.name,
+          p.sku,
+          p.barcode,
+          p.low_stock_threshold,
+          COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
+        ${whereBase}
+        ORDER BY qty_on_hand ASC
+        LIMIT $2
+        OFFSET $3
+      `,
+      [threshold, pagination.limit, pagination.offset],
+    );
+    return res.json({
+      items: result.rows,
+      total,
+      limit: pagination.limit,
+      offset: pagination.offset,
+    });
   }
 
   const result = await pool.query(
@@ -532,9 +653,7 @@ router.get("/low-stock", requireAuth, async (req, res) => {
         p.barcode,
         p.low_stock_threshold,
         COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
-      FROM products p
-      LEFT JOIN inventory_balances ib ON ib.product_id = p.id
-      WHERE p.is_active = TRUE AND COALESCE(ib.qty_on_hand, 0) <= GREATEST(p.low_stock_threshold, $1)
+      ${whereBase}
       ORDER BY qty_on_hand ASC
     `,
     [threshold],
@@ -543,10 +662,44 @@ router.get("/low-stock", requireAuth, async (req, res) => {
 });
 
 router.get("/movements", requireAuth, async (req, res) => {
+  const parsed = paginatedQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid query params", errors: parsed.error.flatten() });
+  }
+  const pagination = parsed.data;
+
   const branchId = req.query.branchId as string | undefined;
-  const limit = Math.min(Number(req.query.limit ?? 100), 500);
+  const limit = Math.min(Number(pagination.limit ?? req.query.limit ?? 100), 500);
+  const offset = pagination.offset;
 
   if (branchId) {
+    if (pagination.withTotal === "true") {
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM branch_inventory_movements WHERE branch_id = $1`,
+        [branchId],
+      );
+      const total = countResult.rows[0]?.total ?? 0;
+      const rows = await pool.query(
+        `
+          SELECT
+            bim.*,
+            p.name AS product_name,
+            pv.name AS variant_name,
+            ib.batch_code
+          FROM branch_inventory_movements bim
+          JOIN products p ON p.id = bim.product_id
+          LEFT JOIN product_variants pv ON pv.id = bim.variant_id
+          LEFT JOIN inventory_batches ib ON ib.id = bim.batch_id
+          WHERE bim.branch_id = $1
+          ORDER BY bim.created_at DESC
+          LIMIT $2
+          OFFSET $3
+        `,
+        [branchId, limit, offset],
+      );
+      return res.json({ items: rows.rows, total, limit, offset });
+    }
+
     const rows = await pool.query(
       `
         SELECT
@@ -565,6 +718,23 @@ router.get("/movements", requireAuth, async (req, res) => {
       [branchId, limit],
     );
     return res.json(rows.rows);
+  }
+
+  if (pagination.withTotal === "true") {
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM inventory_movements`);
+    const total = countResult.rows[0]?.total ?? 0;
+    const rows = await pool.query(
+      `
+        SELECT im.*, p.name AS product_name
+        FROM inventory_movements im
+        JOIN products p ON p.id = im.product_id
+        ORDER BY im.created_at DESC
+        LIMIT $1
+        OFFSET $2
+      `,
+      [limit, offset],
+    );
+    return res.json({ items: rows.rows, total, limit, offset });
   }
 
   const rows = await pool.query(

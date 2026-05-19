@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { navigateTo } from '#imports'
 import { ApiError, useApi } from '~/composables/useApi'
+import { formatRs } from '~/composables/useMoneyFormat'
 import { useAuth } from '~/composables/useAuth'
 
 type InvoiceRow = {
@@ -202,25 +203,35 @@ onMounted(load)
     <UCard v-if="canManage()">
       <h2 class="mb-4 text-lg font-semibold text-slate-900 dark:text-slate-100">New draft invoice</h2>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <USelect
-          v-model="newForm.supplierId"
-          :items="suppliers.map((s) => ({ label: supplierLabel(s), value: s.id }))"
-          placeholder="Supplier *"
-          class="min-w-0"
-        />
-        <UInput v-model="newForm.invoiceNumber" placeholder="Invoice number *" />
-        <UInput v-model="newForm.referenceNumber" placeholder="Reference" />
-        <UInput v-model="newForm.purchaseDate" type="date" />
-        <USelect
-          v-model="newForm.paymentTerms"
-          :items="[
-            { label: 'Credit (AP)', value: 'credit' },
-            { label: 'Cash', value: 'cash' },
-            { label: 'Bank transfer', value: 'bank_transfer' }
-          ]"
-          placeholder="Payment terms"
-          class="min-w-0 sm:col-span-2"
-        />
+        <UiLabeledField label="Supplier" required>
+          <UiSearchableSelect
+            v-model="newForm.supplierId"
+            :items="suppliers.map((s) => ({ label: supplierLabel(s), value: s.id }))"
+            placeholder="Search supplier…"
+            class="min-w-0 w-full"
+          />
+        </UiLabeledField>
+        <UiLabeledField label="Invoice number" html-for="pi-inv-num" required>
+          <UInput id="pi-inv-num" v-model="newForm.invoiceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Reference" html-for="pi-ref">
+          <UInput id="pi-ref" v-model="newForm.referenceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Purchase date" html-for="pi-date">
+          <UInput id="pi-date" v-model="newForm.purchaseDate" type="date" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Payment terms" class="min-w-0 sm:col-span-2">
+          <UiSearchableSelect
+            v-model="newForm.paymentTerms"
+            :items="[
+              { label: 'Credit (AP)', value: 'credit' },
+              { label: 'Cash', value: 'cash' },
+              { label: 'Bank transfer', value: 'bank_transfer' }
+            ]"
+            placeholder="Search payment terms…"
+            class="min-w-0 w-full"
+          />
+        </UiLabeledField>
       </div>
 
       <div v-if="newForm.supplierId" class="mt-6 space-y-3">
@@ -246,8 +257,8 @@ onMounted(load)
               <tr v-for="p in catalogProducts" :key="p.id" class="border-t border-slate-100 dark:border-slate-800">
                 <td class="px-2 py-1.5">{{ p.name }}</td>
                 <td class="px-2 py-1.5 font-mono">{{ p.sku }}</td>
-                <td class="px-2 py-1.5 text-right font-mono">{{ Number(p.cost_price ?? 0).toFixed(2) }}</td>
-                <td class="px-2 py-1.5 text-right font-mono">{{ Number(p.sale_price ?? 0).toFixed(2) }}</td>
+                <td class="px-2 py-1.5 text-right font-mono">{{ formatRs(p.cost_price) }}</td>
+                <td class="px-2 py-1.5 text-right font-mono">{{ formatRs(p.sale_price) }}</td>
                 <td class="px-2 py-1.5">
                   <UButton size="xs" variant="soft" icon="i-lucide-plus" @click="addPrefabFromCatalog(p)">Add</UButton>
                 </td>
@@ -302,19 +313,21 @@ onMounted(load)
     <UCard>
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Invoices</h2>
-        <USelect
-          v-model="statusFilter"
-          :items="[
-            { label: 'All statuses', value: '__all__' },
-            { label: 'Draft', value: 'draft' },
-            { label: 'Posted', value: 'posted' },
-            { label: 'Partially returned', value: 'partially_returned' },
-            { label: 'Reversed', value: 'reversed' }
-          ]"
-          placeholder="Status"
-          class="w-56"
-          @update:model-value="load"
-        />
+        <UiLabeledField label="Status">
+          <UiSearchableSelect
+            v-model="statusFilter"
+            :items="[
+              { label: 'All statuses', value: '__all__' },
+              { label: 'Draft', value: 'draft' },
+              { label: 'Posted', value: 'posted' },
+              { label: 'Partially returned', value: 'partially_returned' },
+              { label: 'Reversed', value: 'reversed' }
+            ]"
+            placeholder="Search status…"
+            class="w-56"
+            @update:model-value="load"
+          />
+        </UiLabeledField>
       </div>
       <div class="overflow-x-auto">
         <table class="min-w-full text-left text-sm">
@@ -331,7 +344,7 @@ onMounted(load)
           </thead>
           <tbody>
             <tr v-for="inv in invoices" :key="inv.id" class="border-b border-slate-100 dark:border-slate-800">
-              <td class="py-2 pr-4">{{ inv.purchase_date }}</td>
+              <td class="py-2 pr-4 whitespace-nowrap">{{ formatDate(inv.purchase_date) }}</td>
               <td class="py-2 pr-4">{{ inv.company_name || inv.supplier_name }}</td>
               <td class="py-2 pr-4 font-mono">{{ inv.invoice_number }}</td>
               <td class="py-2 pr-4">{{ inv.payment_terms }}</td>

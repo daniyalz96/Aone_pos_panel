@@ -81,7 +81,6 @@ export async function executePostOrderAsInvoice(opts: PostInvoiceOptions) {
     ]);
     const currentQty = Number(balanceResult.rows[0].qty_on_hand);
     const nextQty = currentQty - Number(row.qty);
-    if (nextQty < 0) throw new Error(`Insufficient stock for product ${row.product_name as string}`);
     await client.query(`UPDATE inventory_balances SET qty_on_hand = $2, updated_at = NOW() WHERE product_id = $1`, [
       row.product_id,
       nextQty,

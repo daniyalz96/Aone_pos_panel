@@ -1,10 +1,21 @@
 import { Router } from "express";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireInventoryManagement } from "../middleware/auth.js";
 import { createAuditLog } from "../utils/audit.js";
 
 const router = Router();
+
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+
+function paramId(raw: string | string[] | undefined): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw) && raw[0]) return raw[0];
+  return "";
+}
 
 /** Accept JSON booleans and common form-style strings (`"true"` / `"0"`). */
 const booleanLike = z.preprocess((value) => {
@@ -72,6 +83,14 @@ const listProductsQuerySchema = z.object({
     .optional()
     .default("created_desc"),
   limit: z.coerce.number().min(1).max(500).optional().default(200),
+  offset: z.coerce.number().min(0).optional().default(0),
+  withTotal: z.enum(["true", "false"]).optional(),
+});
+
+const listCategoriesQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(500).optional(),
+  offset: z.coerce.number().min(0).optional().default(0),
+  withTotal: z.enum(["true", "false"]).optional(),
 });
 
 /** Express can pass repeated keys as string[]; clients may send empty strings. */
@@ -178,8 +197,22 @@ router.get("/", requireAuth, async (req, res) => {
   };
   const orderBy = orderByMap[filters.sort] ?? orderByMap.created_desc;
 
+  const countParams = [...params];
+  const countResult = await pool.query(
+    `
+      SELECT COUNT(*)::int AS total
+      FROM products p
+      ${whereClause}
+    `,
+    countParams,
+  );
+  const total = countResult.rows[0]?.total ?? 0;
+
   params.push(filters.limit);
   const limitParam = `$${i}`;
+  i += 1;
+  params.push(filters.offset);
+  const offsetParam = `$${i}`;
 
   const result = await pool.query(
     `
@@ -193,9 +226,19 @@ router.get("/", requireAuth, async (req, res) => {
       ${whereClause}
       ORDER BY ${orderBy}
       LIMIT ${limitParam}
+      OFFSET ${offsetParam}
     `,
     params,
   );
+
+  if (filters.withTotal === "true") {
+    return res.json({
+      items: result.rows,
+      total,
+      limit: filters.limit,
+      offset: filters.offset,
+    });
+  }
   return res.json(result.rows);
 });
 
@@ -317,15 +360,43 @@ router.post("/departments", requireAuth, requireInventoryManagement, async (req,
   return res.status(201).json(inserted.rows[0]);
 });
 
-router.get("/categories", requireAuth, async (_req, res) => {
+router.get("/categories", requireAuth, async (req, res) => {
+  const parsed = listCategoriesQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid query params", errors: parsed.error.flatten() });
+  }
+  const { limit, offset, withTotal } = parsed.data;
+
+  const baseFrom = `
+      FROM categories c
+      LEFT JOIN departments d ON d.id = c.department_id
+      WHERE c.is_active = TRUE
+  `;
+
+  if (withTotal === "true" && limit !== undefined) {
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total ${baseFrom}`);
+    const total = countResult.rows[0]?.total ?? 0;
+    const result = await pool.query(
+      `
+        SELECT
+          c.*,
+          d.name AS department_name
+        ${baseFrom}
+        ORDER BY c.name ASC
+        LIMIT $1
+        OFFSET $2
+      `,
+      [limit, offset],
+    );
+    return res.json({ items: result.rows, total, limit, offset });
+  }
+
   const result = await pool.query(
     `
       SELECT
         c.*,
         d.name AS department_name
-      FROM categories c
-      LEFT JOIN departments d ON d.id = c.department_id
-      WHERE c.is_active = TRUE
+      ${baseFrom}
       ORDER BY c.name ASC
     `,
   );
@@ -443,6 +514,185 @@ router.patch("/categories/:id", requireAuth, requireInventoryManagement, async (
   );
 
   return res.json(refreshed.rows[0]);
+});
+
+router.post("/categories/bulk-delete", requireAuth, requireInventoryManagement, async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
+  }
+
+  const client = await pool.connect();
+  const failed: { id: string; message: string }[] = [];
+  let deletedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+    for (const id of parsed.data.ids) {
+      try {
+        const current = await client.query(`SELECT * FROM categories WHERE id = $1`, [id]);
+        if (current.rowCount === 0) {
+          failed.push({ id, message: "Category not found" });
+          continue;
+        }
+        if (current.rows[0].is_active === false) {
+          failed.push({ id, message: "Category already deleted" });
+          continue;
+        }
+        const updated = await client.query(
+          `UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
+          [id],
+        );
+        await createAuditLog({
+          client,
+          actorUserId: req.user?.id ?? null,
+          action: "delete_category",
+          entity: "categories",
+          entityId: id,
+          beforeData: current.rows[0] as Record<string, unknown>,
+          afterData: updated.rows[0] as Record<string, unknown>,
+        });
+        deletedCount += 1;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Delete failed";
+        failed.push({ id, message });
+      }
+    }
+    await client.query("COMMIT");
+    return res.json({ deletedCount, failedCount: failed.length, failed });
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Bulk delete failed";
+    return res.status(500).json({ message });
+  } finally {
+    client.release();
+  }
+});
+
+router.delete("/categories/:id", requireAuth, requireInventoryManagement, async (req, res) => {
+  const id = paramId(req.params.id);
+  if (!z.string().uuid().safeParse(id).success) {
+    return res.status(400).json({ message: "Invalid category id" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query(`SELECT * FROM categories WHERE id = $1`, [id]);
+    if (current.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Category not found" });
+    }
+    if (current.rows[0].is_active === false) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "Category already deleted" });
+    }
+    const updated = await client.query(
+      `UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [id],
+    );
+    await createAuditLog({
+      client,
+      actorUserId: req.user?.id ?? null,
+      action: "delete_category",
+      entity: "categories",
+      entityId: id,
+      beforeData: current.rows[0] as Record<string, unknown>,
+      afterData: updated.rows[0] as Record<string, unknown>,
+    });
+    await client.query("COMMIT");
+    return res.json(updated.rows[0]);
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Delete failed";
+    return res.status(500).json({ message });
+  } finally {
+    client.release();
+  }
+});
+
+async function softDeleteProduct(
+  client: PoolClient,
+  productId: string,
+  actorUserId: string | null,
+): Promise<{ ok: true; row: Record<string, unknown> } | { ok: false; message: string; status: number }> {
+  const current = await client.query(`SELECT * FROM products WHERE id = $1`, [productId]);
+  if (current.rowCount === 0) {
+    return { ok: false, message: "Product not found", status: 404 };
+  }
+  if (current.rows[0].is_active === false) {
+    return { ok: false, message: "Product already deleted", status: 409 };
+  }
+  const updated = await client.query(
+    `UPDATE products SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
+    [productId],
+  );
+  await createAuditLog({
+    client,
+    actorUserId,
+    action: "delete_product",
+    entity: "products",
+    entityId: productId,
+    beforeData: current.rows[0] as Record<string, unknown>,
+    afterData: updated.rows[0] as Record<string, unknown>,
+  });
+  return { ok: true, row: updated.rows[0] as Record<string, unknown> };
+}
+
+router.post("/bulk-delete", requireAuth, requireInventoryManagement, async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
+  }
+
+  const client = await pool.connect();
+  const failed: { id: string; message: string }[] = [];
+  let deletedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+    for (const id of parsed.data.ids) {
+      const result = await softDeleteProduct(client, id, req.user?.id ?? null);
+      if (result.ok) {
+        deletedCount += 1;
+      } else {
+        failed.push({ id, message: result.message });
+      }
+    }
+    await client.query("COMMIT");
+    return res.json({ deletedCount, failedCount: failed.length, failed });
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Bulk delete failed";
+    return res.status(500).json({ message });
+  } finally {
+    client.release();
+  }
+});
+
+router.delete("/:id", requireAuth, requireInventoryManagement, async (req, res) => {
+  const id = paramId(req.params.id);
+  if (!z.string().uuid().safeParse(id).success) {
+    return res.status(400).json({ message: "Invalid product id" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await softDeleteProduct(client, id, req.user?.id ?? null);
+    if (!result.ok) {
+      await client.query("ROLLBACK");
+      return res.status(result.status).json({ message: result.message });
+    }
+    await client.query("COMMIT");
+    return res.json(result.row);
+  } catch (error: unknown) {
+    await client.query("ROLLBACK");
+    const message = error instanceof Error ? error.message : "Delete failed";
+    return res.status(500).json({ message });
+  } finally {
+    client.release();
+  }
 });
 
 router.post("/", requireAuth, requireInventoryManagement, async (req, res) => {

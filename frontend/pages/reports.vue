@@ -116,7 +116,7 @@ const querySaleInvoices = () => {
 }
 
 const formatMoney = (n: unknown) =>
-  `PKR ${Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  `Rs ${Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 const loadReports = async () => {
   loading.value = true
@@ -355,11 +355,21 @@ onMounted(async () => {
 
     <UCard>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-        <UInput v-model="filters.from" type="date" />
-        <UInput v-model="filters.to" type="date" />
-        <USelect v-model="filters.branchId" :items="branchSelectItems()" placeholder="Branch" class="min-w-0" />
-        <USelect v-model="filters.paymentStatus" :items="paymentFilterItems" placeholder="Payment" class="min-w-0" />
-        <UInput v-model="filters.search" placeholder="Search invoice # or customer" class="min-w-0" />
+        <UiLabeledField label="From" html-for="rpt-from">
+          <UInput id="rpt-from" v-model="filters.from" type="date" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="To" html-for="rpt-to">
+          <UInput id="rpt-to" v-model="filters.to" type="date" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Branch">
+          <UiSearchableSelect v-model="filters.branchId" :items="branchSelectItems()" placeholder="Search branch…" class="min-w-0 w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Payment status">
+          <UiSearchableSelect v-model="filters.paymentStatus" :items="paymentFilterItems" placeholder="Search payment…" class="min-w-0 w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Search" html-for="rpt-search">
+          <UInput id="rpt-search" v-model="filters.search" placeholder="Invoice # or customer" class="w-full" />
+        </UiLabeledField>
         <UButton icon="i-lucide-search" :loading="loading" class="shrink-0" @click="loadReports">Apply filters</UButton>
       </div>
     </UCard>
@@ -407,7 +417,7 @@ onMounted(async () => {
             <template v-else>
               <tr v-for="row in saleInvoices" :key="row.id" class="border-b border-slate-100 dark:border-slate-800">
                 <td class="px-3 py-2 font-mono text-xs">{{ row.invoice_number }}</td>
-                <td class="px-3 py-2 whitespace-nowrap">{{ new Date(row.created_at).toLocaleString() }}</td>
+                <td class="px-3 py-2 whitespace-nowrap">{{ formatDateTime(row.created_at) }}</td>
                 <td class="max-w-[140px] truncate px-3 py-2" :title="row.customer_name ?? ''">{{ row.customer_name ?? '—' }}</td>
                 <td class="px-3 py-2">{{ row.branch_name ?? '—' }}</td>
                 <td class="px-3 py-2">{{ row.cashier_name ?? '—' }}</td>
@@ -435,10 +445,10 @@ onMounted(async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Tax slabs</h2>
         <div class="space-y-2 text-sm">
-          <div v-for="slab in taxSlabs" :key="String(slab.tax_rate)" class="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
-            <p class="font-medium">Tax {{ slab.tax_rate }}%</p>
-            <p>Taxable: {{ formatMoney(slab.taxable_value) }}</p>
-            <p>Tax: {{ formatMoney(slab.tax_value) }}</p>
+          <div v-for="slab in taxSlabs" :key="String(slab.tax_rate)" class="grid gap-2 rounded-lg bg-slate-100 p-3 sm:grid-cols-3 dark:bg-slate-800">
+            <UiDetailField label="Tax rate" :value="`${slab.tax_rate}%`" />
+            <UiDetailField label="Taxable" :value="formatMoney(slab.taxable_value)" />
+            <UiDetailField label="Tax amount" :value="formatMoney(slab.tax_value)" />
           </div>
           <p v-if="!taxSlabs.length" class="text-slate-500">No tax data.</p>
         </div>
@@ -447,10 +457,10 @@ onMounted(async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Payment methods</h2>
         <div class="space-y-2 text-sm">
-          <div v-for="method in paymentMethods" :key="String(method.method)" class="rounded-lg bg-slate-100 p-3 dark:bg-slate-800">
-            <p class="font-medium">{{ method.method }}</p>
-            <p>Count: {{ method.count }}</p>
-            <p>Total: {{ formatMoney(method.total_amount) }}</p>
+          <div v-for="method in paymentMethods" :key="String(method.method)" class="grid gap-2 rounded-lg bg-slate-100 p-3 sm:grid-cols-3 dark:bg-slate-800">
+            <UiDetailField label="Method" :value="method.method" />
+            <UiDetailField label="Count" :value="method.count" />
+            <UiDetailField label="Total" :value="formatMoney(method.total_amount)" />
           </div>
           <p v-if="!paymentMethods.length" class="text-slate-500">No payment data.</p>
         </div>
@@ -472,7 +482,7 @@ onMounted(async () => {
           </thead>
           <tbody>
             <tr v-for="row in profitMargin" :key="String(row.month)" class="border-b border-slate-100 dark:border-slate-800">
-              <td class="px-3 py-2">{{ row.month }}</td>
+              <td class="px-3 py-2 whitespace-nowrap">{{ formatMonth(row.month) }}</td>
               <td class="px-3 py-2">{{ formatMoney(row.revenue_ex_tax) }}</td>
               <td class="px-3 py-2">{{ formatMoney(row.cogs) }}</td>
               <td class="px-3 py-2">{{ formatMoney(row.gross_profit) }}</td>
@@ -502,12 +512,15 @@ onMounted(async () => {
           <p class="mt-1 text-sm text-slate-500">Creates a posted invoice (stock deducted). Admin/manager only.</p>
 
           <div class="mt-4 space-y-3">
-            <UInput v-model="manualForm.customerName" placeholder="Customer name (optional)" />
-            <div class="flex items-center gap-2">
+            <UiLabeledField label="Customer name" html-for="manual-customer">
+              <UInput id="manual-customer" v-model="manualForm.customerName" class="w-full" />
+            </UiLabeledField>
+            <UiLabeledField label="Tax-inclusive pricing">
               <input id="taxInc" v-model="manualForm.taxInclusive" type="checkbox" class="rounded border-slate-300" />
-              <label for="taxInc" class="text-sm text-slate-700 dark:text-slate-300">Tax-inclusive pricing</label>
-            </div>
-            <USelect v-model="manualForm.branchId" :items="manualBranchItems()" placeholder="Branch" :ui="manualModalSelectUi" />
+            </UiLabeledField>
+            <UiLabeledField label="Branch">
+              <UiSearchableSelect v-model="manualForm.branchId" :items="manualBranchItems()" placeholder="Search branch…" :ui="manualModalSelectUi" />
+            </UiLabeledField>
 
             <div class="space-y-2">
               <div
@@ -515,31 +528,33 @@ onMounted(async () => {
                 :key="idx"
                 class="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 p-2 dark:border-slate-700"
               >
-                <div class="min-w-[200px] flex-1">
-                  <USelect v-model="line.productId" :items="productItems()" placeholder="Product" :ui="manualModalSelectUi" />
-                </div>
-                <UInput v-model.number="line.qty" type="number" min="0.01" step="0.01" class="w-24" />
+                <UiLabeledField label="Product" class="min-w-[200px] flex-1">
+                  <UiSearchableSelect v-model="line.productId" :items="productItems()" placeholder="Search product…" :ui="manualModalSelectUi" />
+                </UiLabeledField>
+                <UiLabeledField label="Qty" :html-for="`manual-qty-${idx}`">
+                  <UInput :id="`manual-qty-${idx}`" v-model.number="line.qty" type="number" min="0.01" step="0.01" class="w-24" />
+                </UiLabeledField>
                 <UButton v-if="manualForm.lines.length > 1" size="xs" color="error" variant="ghost" icon="i-lucide-trash" @click="removeManualLine(idx)" />
               </div>
               <UButton size="xs" variant="soft" icon="i-lucide-plus" @click="addManualLine">Add line</UButton>
             </div>
 
-            <div class="flex items-center gap-2 border-t border-slate-200 pt-3 dark:border-slate-700">
+            <UiLabeledField label="Record full payment now" class="border-t border-slate-200 pt-3 dark:border-slate-700">
               <input id="payNow" v-model="manualForm.payNow" type="checkbox" class="rounded border-slate-300" />
-              <label for="payNow" class="text-sm">Record full payment now</label>
-            </div>
-            <USelect
-              v-if="manualForm.payNow"
-              v-model="manualForm.paymentMethod"
-              :ui="manualModalSelectUi"
-              :items="[
-                { label: 'Cash', value: 'cash' },
-                { label: 'Card', value: 'card' },
-                { label: 'QR', value: 'qr' },
-                { label: 'Wallet', value: 'wallet' },
-                { label: 'Bank', value: 'bank' }
-              ]"
-            />
+            </UiLabeledField>
+            <UiLabeledField v-if="manualForm.payNow" label="Payment method">
+              <UiSearchableSelect
+                v-model="manualForm.paymentMethod"
+                :ui="manualModalSelectUi"
+                :items="[
+                  { label: 'Cash', value: 'cash' },
+                  { label: 'Card', value: 'card' },
+                  { label: 'QR', value: 'qr' },
+                  { label: 'Wallet', value: 'wallet' },
+                  { label: 'Bank', value: 'bank' }
+                ]"
+              />
+            </UiLabeledField>
 
             <div class="flex justify-end gap-2 pt-2">
               <UButton variant="soft" color="neutral" @click="closeManual">Cancel</UButton>

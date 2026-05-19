@@ -81,9 +81,10 @@ onMounted(async () => {
       <UCard class="min-w-0">
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Low Stock</h2>
         <div class="space-y-2">
-          <div v-for="item in lowStock" :key="item.product_id" class="rounded-lg bg-amber-50 p-3 text-sm dark:bg-amber-950/30">
-            <p class="font-medium">{{ item.name }}</p>
-            <p class="text-slate-600 dark:text-slate-400">SKU: {{ item.sku }} • Qty: {{ Number(item.qty_on_hand).toFixed(3) }}</p>
+          <div v-for="item in lowStock" :key="item.product_id" class="grid gap-2 rounded-lg bg-amber-50 p-3 text-sm sm:grid-cols-3 dark:bg-amber-950/30">
+            <UiDetailField label="Product" :value="item.name" />
+            <UiDetailField label="SKU" :value="item.sku" />
+            <UiDetailField label="Qty on hand" :value="Number(item.qty_on_hand).toFixed(3)" />
           </div>
           <p v-if="!lowStock.length" class="text-sm text-slate-500">No low stock items.</p>
         </div>
@@ -92,14 +93,22 @@ onMounted(async () => {
       <UCard class="min-w-0">
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Stock In</h2>
         <div class="grid gap-3">
-          <USelect
-            v-model="stockInForm.productId"
-            :items="products.map((p) => ({ label: `${p.name} (${p.sku})`, value: p.id }))"
-            placeholder="Select product"
-          />
-          <UInput v-model.number="stockInForm.qty" type="number" placeholder="Quantity" />
-          <UInput v-model.number="stockInForm.unitCost" type="number" placeholder="Unit cost" />
-          <UInput v-model="stockInForm.reason" placeholder="Reason" />
+          <UiLabeledField label="Product">
+            <UiSearchableSelect
+              v-model="stockInForm.productId"
+              :items="products.map((p) => ({ label: `${p.name} (${p.sku})`, value: p.id }))"
+              placeholder="Search product…"
+            />
+          </UiLabeledField>
+          <UiLabeledField label="Quantity" html-for="restock-qty">
+            <UInput id="restock-qty" v-model.number="stockInForm.qty" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Unit cost" html-for="restock-cost">
+            <UInput id="restock-cost" v-model.number="stockInForm.unitCost" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Reason" html-for="restock-reason">
+            <UInput id="restock-reason" v-model="stockInForm.reason" class="w-full" />
+          </UiLabeledField>
           <UButton icon="i-lucide-arrow-down-to-line" @click="stockIn">Submit Stock In</UButton>
         </div>
       </UCard>

@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    /** Pie slices: slice name + value (PKR) */
+    /** Pie slices: slice name + value (Rs) */
     series: { name: string; y: number }[]
     /** Optional subtitle above chart (empty = hidden) */
     title?: string
@@ -43,7 +43,7 @@ async function draw() {
     title: { text: undefined },
     credits: { enabled: false },
     tooltip: {
-      pointFormat: isPlaceholder ? '{point.name}' : '<b>{point.percentage:.1f}%</b><br/>PKR {point.y:,.0f}'
+      pointFormat: isPlaceholder ? '{point.name}' : '<b>{point.percentage:.1f}%</b><br/>Rs {point.y:,.0f}'
     },
     plotOptions: {
       pie: {

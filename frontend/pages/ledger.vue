@@ -102,7 +102,7 @@ const detailEntry = ref<Record<string, unknown> | null>(null)
 const detailLines = ref<JournalLineRow[]>([])
 
 const currency = (n: number) =>
-  `PKR ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  `Rs ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 const queryEntries = () => {
   const params = new URLSearchParams()
@@ -180,14 +180,6 @@ const creditSum = computed(() =>
   detailLines.value.reduce((a, row) => a + Number(row.credit), 0)
 )
 
-const formattedDateTime = (iso: string) => {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
-}
-
 onMounted(async () => {
   await Promise.all([loadEntries(), loadAccounts()])
 })
@@ -250,7 +242,7 @@ onMounted(async () => {
       <div class="flex flex-wrap items-end gap-3 border-b border-slate-100 pb-4 dark:border-slate-800">
         <div class="min-w-[140px]">
           <label class="mb-1 block text-xs font-medium text-slate-500">Source</label>
-          <USelect v-model="filters.sourceType" :items="SOURCE_TYPE_OPTIONS" placeholder="Filter by type" class="min-w-[220px]" />
+          <UiSearchableSelect v-model="filters.sourceType" :items="SOURCE_TYPE_OPTIONS" placeholder="Search type…" class="min-w-[220px]" />
         </div>
         <div>
           <label class="mb-1 block text-xs font-medium text-slate-500">From</label>
@@ -281,7 +273,7 @@ onMounted(async () => {
             </tr>
             <tr v-for="row in entries" v-else :key="row.id" class="border-b border-slate-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900/70">
               <td class="px-3 py-2 whitespace-nowrap text-slate-700 dark:text-slate-300">
-                {{ formattedDateTime(row.created_at) }}
+                {{ formatDateTime(row.created_at) }}
               </td>
               <td class="px-3 py-2">
                 <UBadge variant="soft" color="neutral">{{ row.source_type }}</UBadge>
@@ -313,12 +305,10 @@ onMounted(async () => {
 
       <div v-if="accountsPayload" class="mb-4 flex flex-wrap gap-4 text-sm">
         <div class="rounded-lg bg-slate-100 px-4 py-2 dark:bg-slate-800">
-          Total debits:
-          <span class="font-semibold">{{ currency(accountsPayload.totals.debit) }}</span>
+          <UiDetailField label="Total debits" :value="currency(accountsPayload.totals.debit)" />
         </div>
         <div class="rounded-lg bg-slate-100 px-4 py-2 dark:bg-slate-800">
-          Total credits:
-          <span class="font-semibold">{{ currency(accountsPayload.totals.credit) }}</span>
+          <UiDetailField label="Total credits" :value="currency(accountsPayload.totals.credit)" />
         </div>
         <UBadge v-if="accountsPayload.totals.balanced" color="success" variant="soft">Books balance</UBadge>
         <UBadge v-else color="error" variant="soft">Debit/credit mismatch — investigate data</UBadge>
@@ -376,14 +366,11 @@ onMounted(async () => {
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">Journal entry</h2>
-              <p v-if="detailEntry" class="mt-1 text-xs text-slate-500">
-                {{ formattedDateTime(String(detailEntry.created_at)) }}
-                —
-                {{ String(detailEntry.source_type) }}
-              </p>
-              <p v-if="detailEntry?.memo" class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                {{ String(detailEntry.memo) }}
-              </p>
+              <div v-if="detailEntry" class="mt-2 grid gap-2 sm:grid-cols-3">
+                <UiDetailField label="Posted" :value="formatDateTime(detailEntry.created_at)" />
+                <UiDetailField label="Type" :value="String(detailEntry.source_type)" />
+                <UiDetailField label="Memo" :value="detailEntry.memo ? String(detailEntry.memo) : '—'" />
+              </div>
             </div>
             <UButton variant="ghost" color="neutral" icon="i-lucide-x" aria-label="Close" @click="closeDetail" />
           </div>

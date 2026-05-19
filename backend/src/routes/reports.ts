@@ -424,12 +424,22 @@ router.get("/analytics/sales-trend", requireAuth, requireRole("admin", "manager"
 
   const rows = await pool.query(
     `
+      WITH invoice_profit AS (
+        SELECT
+          ii.invoice_id,
+          COALESCE(SUM(ii.pre_tax_amount - ii.qty * p.cost_price), 0)::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN products p ON p.id = ii.product_id
+        GROUP BY ii.invoice_id
+      )
       SELECT
         to_char(date_trunc('${dateTrunc}', i.created_at), '${labelFormat}') AS period,
         COUNT(i.id)::int AS invoice_count,
         COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
-        COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS total_tax
+        COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS total_tax,
+        COALESCE(SUM(ip.gross_profit), 0)::numeric(14,2) AS gross_profit
       FROM invoices i
+      LEFT JOIN invoice_profit ip ON ip.invoice_id = i.id
       WHERE i.created_at BETWEEN $1 AND $2
         AND i.invoice_status <> 'voided'
         AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
@@ -486,7 +496,7 @@ router.get("/analytics/top-items", requireAuth, requireRole("admin", "manager"),
     `
       SELECT
         ii.product_id,
-        ii.product_name,
+        COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(ii.product_name), ''), 'Unknown product') AS product_name,
         COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS total_qty,
         COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
         COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS gross_revenue,
@@ -502,8 +512,8 @@ router.get("/analytics/top-items", requireAuth, requireRole("admin", "manager"),
       WHERE i.created_at BETWEEN $1 AND $2
         AND i.invoice_status <> 'voided'
         AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-      GROUP BY ii.product_id, ii.product_name
-      ORDER BY gross_revenue DESC
+      GROUP BY ii.product_id, p.name, ii.product_name
+      ORDER BY gross_profit DESC
       LIMIT $4
     `,
     [filters.from.toISOString(), filters.to.toISOString(), filters.branchId ?? null, parsed.data.limit],

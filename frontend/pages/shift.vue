@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useApi } from '~/composables/useApi'
+import { fieldLabel, formatRecordValue } from '~/utils/recordDisplay'
 
 const { request } = useApi()
 const errorMessage = ref('')
@@ -15,6 +16,18 @@ const closeForm = reactive({
   closingCash: 0,
   notes: ''
 })
+
+const recordEntries = (record: Record<string, unknown> | null) => {
+  if (!record) return [] as Array<{ key: string; label: string; value: string }>
+  return Object.entries(record).map(([key, value]) => ({
+    key,
+    label: fieldLabel(key),
+    value: formatRecordValue(value)
+  }))
+}
+
+const activeShiftEntries = computed(() => recordEntries(activeShift.value))
+const dayCloseEntries = computed(() => recordEntries(dayCloseSummary.value))
 
 const openShift = async () => {
   errorMessage.value = ''
@@ -65,7 +78,9 @@ const closeShift = async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Open Shift</h2>
         <div class="grid gap-3">
-          <UInput v-model.number="openForm.openingCash" type="number" placeholder="Opening cash" />
+          <UiLabeledField label="Opening cash" html-for="shift-open-cash">
+            <UInput id="shift-open-cash" v-model.number="openForm.openingCash" type="number" class="w-full" />
+          </UiLabeledField>
           <UButton icon="i-lucide-play-circle" @click="openShift">Open Shift</UButton>
         </div>
       </UCard>
@@ -73,8 +88,12 @@ const closeShift = async () => {
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Close Shift</h2>
         <div class="grid gap-3">
-          <UInput v-model.number="closeForm.closingCash" type="number" placeholder="Closing cash" />
-          <UTextarea v-model="closeForm.notes" placeholder="Closing notes" />
+          <UiLabeledField label="Closing cash" html-for="shift-close-cash">
+            <UInput id="shift-close-cash" v-model.number="closeForm.closingCash" type="number" class="w-full" />
+          </UiLabeledField>
+          <UiLabeledField label="Closing notes" html-for="shift-close-notes">
+            <UTextarea id="shift-close-notes" v-model="closeForm.notes" class="w-full" />
+          </UiLabeledField>
           <UButton color="warning" icon="i-lucide-stop-circle" @click="closeShift">Close Shift</UButton>
         </div>
       </UCard>
@@ -82,12 +101,26 @@ const closeShift = async () => {
 
     <UCard v-if="activeShift">
       <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Active Shift</h2>
-      <pre class="overflow-auto rounded-lg bg-slate-100 p-3 text-xs dark:bg-slate-800">{{ activeShift }}</pre>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <UiDetailField
+          v-for="entry in activeShiftEntries"
+          :key="entry.key"
+          :label="entry.label"
+          :value="entry.value"
+        />
+      </div>
     </UCard>
 
     <UCard v-if="dayCloseSummary">
       <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Day Close Summary</h2>
-      <pre class="overflow-auto rounded-lg bg-slate-100 p-3 text-xs dark:bg-slate-800">{{ dayCloseSummary }}</pre>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <UiDetailField
+          v-for="entry in dayCloseEntries"
+          :key="entry.key"
+          :label="entry.label"
+          :value="entry.value"
+        />
+      </div>
     </UCard>
   </section>
 </template>

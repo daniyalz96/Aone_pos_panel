@@ -444,8 +444,8 @@ const recordPayment = async () => {
 
 const fmtMoney = (n: string | number | null | undefined) => {
   const v = Number(n ?? 0)
-  if (!Number.isFinite(v)) return '0.00'
-  return v.toFixed(2)
+  if (!Number.isFinite(v)) return 'Rs 0.00'
+  return `Rs ${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 const refreshSuppliersPage = () => {
@@ -632,10 +632,11 @@ onMounted(async () => {
           <div class="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-700">
             <div>
               <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Edit supplier</h2>
-              <p v-if="detail" class="mt-1 text-xs text-slate-500">
-                Total {{ fmtMoney(detail.total_balance) }} · Paid {{ fmtMoney(detail.paid_balance) }} · Current
-                {{ fmtMoney(detail.current_balance ?? detail.ledger_balance) }}
-              </p>
+              <div v-if="detail" class="mt-2 grid gap-2 sm:grid-cols-3">
+                <UiDetailField label="Total balance" :value="fmtMoney(detail.total_balance)" />
+                <UiDetailField label="Paid" :value="fmtMoney(detail.paid_balance)" />
+                <UiDetailField label="Current balance" :value="fmtMoney(detail.current_balance ?? detail.ledger_balance)" />
+              </div>
             </div>
             <UButton color="neutral" variant="ghost" icon="i-lucide-x" @click="closeManage" />
           </div>
@@ -731,7 +732,7 @@ onMounted(async () => {
                   </div>
                   <div class="flex min-w-0 flex-col gap-1.5">
                     <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="sup-pay-method">Payment method</label>
-                    <USelect
+                    <UiSearchableSelect
                       id="sup-pay-method"
                       v-model="paymentForm.method"
                       class="w-full"
@@ -765,7 +766,7 @@ onMounted(async () => {
                   </thead>
                   <tbody>
                     <tr v-for="row in ledger" :key="row.id" class="border-t border-slate-100 dark:border-slate-800">
-                      <td class="px-3 py-2 text-slate-600 dark:text-slate-300">{{ new Date(row.created_at).toLocaleString() }}</td>
+                      <td class="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-slate-300">{{ formatDateTime(row.created_at) }}</td>
                       <td class="px-3 py-2">{{ row.entry_kind }}</td>
                       <td class="px-3 py-2 font-mono">{{ fmtMoney(row.amount) }}</td>
                       <td class="px-3 py-2 font-mono text-emerald-700 dark:text-emerald-300">{{ fmtMoney(row.running_balance) }}</td>

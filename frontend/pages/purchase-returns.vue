@@ -137,17 +137,17 @@ watch(selectedInvoiceId, (id) => {
       <div class="grid gap-4 lg:grid-cols-2">
         <div>
           <label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Purchase invoice</label>
-          <USelect
+          <UiSearchableSelect
             v-model="selectedInvoiceId"
             :items="eligible.map((i) => ({ label: `${i.invoice_number} — ${i.company_name || i.supplier_name}`, value: i.id }))"
-            placeholder="Select invoice"
+            placeholder="Search invoice…"
             class="w-full"
           />
           <p v-if="!eligible.length" class="mt-2 text-sm text-slate-500">No posted invoices available.</p>
         </div>
         <div>
           <label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Reason code *</label>
-          <USelect
+          <UiSearchableSelect
             v-model="reasonCode"
             :items="[
               { label: 'Damaged', value: 'damaged' },
@@ -158,7 +158,9 @@ watch(selectedInvoiceId, (id) => {
             ]"
             class="w-full"
           />
-          <UInput v-model="notes" class="mt-3" placeholder="Optional notes" />
+          <UiLabeledField label="Notes" html-for="pr-notes" class="mt-3">
+            <UInput id="pr-notes" v-model="notes" class="w-full" />
+          </UiLabeledField>
         </div>
       </div>
 

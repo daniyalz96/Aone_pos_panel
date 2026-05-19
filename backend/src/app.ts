@@ -13,7 +13,8 @@ app.use(cors());
 /** Multipart Excel upload — before express.json() so the body stream stays intact for multer. */
 registerExcelUploadRoute(app);
 
-app.use(express.json());
+/** Default 100kb is too small for bulk JSON (e.g. Excel import apply with many rows). */
+app.use(express.json({ limit: "10mb" }));
 
 /** Dashboard KPIs — registered on the app so this path always resolves before nested routers. */
 app.get("/api/v1/home/kpis", requireAuth, (req: Request, res: Response) => {

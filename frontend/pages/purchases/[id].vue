@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from '#imports'
 import { ApiError, useApi } from '~/composables/useApi'
+import { formatRs } from '~/composables/useMoneyFormat'
 import { useAuth } from '~/composables/useAuth'
 
 type LineRow = {
@@ -411,36 +412,50 @@ onMounted(async () => {
 
     <UCard v-if="inv">
       <div v-if="isDraft && canManage()" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <USelect
-          v-model="header.supplierId"
-          :items="suppliers.map((s) => ({ label: supplierLabel(s), value: s.id }))"
-          placeholder="Supplier"
-          class="sm:col-span-2 lg:col-span-3"
-        />
-        <UInput v-model="header.invoiceNumber" placeholder="Invoice number" />
-        <UInput v-model="header.referenceNumber" placeholder="Reference" />
-        <UInput v-model="header.purchaseDate" type="date" />
-        <USelect
-          v-model="header.paymentTerms"
-          :items="[
-            { label: 'Credit (AP)', value: 'credit' },
-            { label: 'Cash', value: 'cash' },
-            { label: 'Bank transfer', value: 'bank_transfer' }
-          ]"
-          placeholder="Payment terms"
-        />
-        <USelect
-          v-model="header.branchId"
-          :items="[
-            { label: 'Global inventory (no branch)', value: '__none__' },
-            ...branches.map((b) => ({ label: b.name, value: b.id }))
-          ]"
-          placeholder="Branch (optional)"
-        />
-        <UInput v-model="header.notes" class="sm:col-span-2 lg:col-span-3" placeholder="Notes" />
-        <div class="flex items-center gap-2 sm:col-span-2 lg:col-span-3">
-          <UCheckbox v-model="searchAllProducts" label="Search all products (ignore supplier catalog filter)" />
-        </div>
+        <UiLabeledField label="Supplier" class="sm:col-span-2 lg:col-span-3" required>
+          <UiSearchableSelect
+            v-model="header.supplierId"
+            :items="suppliers.map((s) => ({ label: supplierLabel(s), value: s.id }))"
+            placeholder="Search supplier…"
+            class="w-full"
+          />
+        </UiLabeledField>
+        <UiLabeledField label="Invoice number" html-for="pd-inv-num">
+          <UInput id="pd-inv-num" v-model="header.invoiceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Reference" html-for="pd-ref">
+          <UInput id="pd-ref" v-model="header.referenceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Purchase date" html-for="pd-date">
+          <UInput id="pd-date" v-model="header.purchaseDate" type="date" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Payment terms">
+          <UiSearchableSelect
+            v-model="header.paymentTerms"
+            :items="[
+              { label: 'Credit (AP)', value: 'credit' },
+              { label: 'Cash', value: 'cash' },
+              { label: 'Bank transfer', value: 'bank_transfer' }
+            ]"
+            placeholder="Search payment terms…"
+          />
+        </UiLabeledField>
+        <UiLabeledField label="Branch">
+          <UiSearchableSelect
+            v-model="header.branchId"
+            :items="[
+              { label: 'Global inventory (no branch)', value: '__none__' },
+              ...branches.map((b) => ({ label: b.name, value: b.id }))
+            ]"
+            placeholder="Search branch…"
+          />
+        </UiLabeledField>
+        <UiLabeledField label="Notes" html-for="pd-notes" class="sm:col-span-2 lg:col-span-3">
+          <UInput id="pd-notes" v-model="header.notes" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Search all products" class="sm:col-span-2 lg:col-span-3" hint="Ignore supplier catalog filter">
+          <UCheckbox v-model="searchAllProducts" />
+        </UiLabeledField>
       </div>
       <div v-else-if="canEditPostedMeta" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <p class="text-sm text-slate-600 dark:text-slate-300 sm:col-span-2 lg:col-span-3">
@@ -449,10 +464,18 @@ onMounted(async () => {
         <p class="text-xs text-slate-500 sm:col-span-2 lg:col-span-3">
           {{ inv.company_name || inv.supplier_name }} · {{ inv.payment_terms }} · supplier, branch, and payment terms are fixed.
         </p>
-        <UInput v-model="header.invoiceNumber" placeholder="Invoice number" />
-        <UInput v-model="header.referenceNumber" placeholder="Reference" />
-        <UInput v-model="header.purchaseDate" type="date" />
-        <UInput v-model="header.notes" class="sm:col-span-2 lg:col-span-3" placeholder="Notes" />
+        <UiLabeledField label="Invoice number" html-for="pd-inv-num">
+          <UInput id="pd-inv-num" v-model="header.invoiceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Reference" html-for="pd-ref">
+          <UInput id="pd-ref" v-model="header.referenceNumber" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Purchase date" html-for="pd-date">
+          <UInput id="pd-date" v-model="header.purchaseDate" type="date" class="w-full" />
+        </UiLabeledField>
+        <UiLabeledField label="Notes" html-for="pd-notes" class="sm:col-span-2 lg:col-span-3">
+          <UInput id="pd-notes" v-model="header.notes" class="w-full" />
+        </UiLabeledField>
         <div
           v-if="canEditDocumentLines && !isDraft"
           class="flex items-center gap-2 sm:col-span-2 lg:col-span-3"
@@ -460,11 +483,14 @@ onMounted(async () => {
           <UCheckbox v-model="searchAllProducts" label="Search all products (ignore supplier catalog filter)" />
         </div>
       </div>
-      <div v-else class="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
-        <p><span class="font-medium">Reference:</span> {{ inv.reference_number || '—' }}</p>
-        <p><span class="font-medium">Date:</span> {{ inv.purchase_date }}</p>
-        <p><span class="font-medium">Terms:</span> {{ inv.payment_terms }}</p>
-        <p><span class="font-medium">Totals:</span> {{ Number(inv.subtotal ?? 0).toFixed(2) }} + tax {{ Number(inv.tax_total ?? 0).toFixed(2) }} = {{ Number(inv.total_amount ?? 0).toFixed(2) }}</p>
+      <div v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+        <UiDetailField label="Reference" :value="inv.reference_number || '—'" />
+        <UiDetailField label="Date" :value="formatDate(inv.purchase_date)" />
+        <UiDetailField label="Terms" :value="inv.payment_terms" />
+        <UiDetailField label="Totals">
+          {{ Number(inv.subtotal ?? 0).toFixed(2) }} + tax {{ Number(inv.tax_total ?? 0).toFixed(2) }} =
+          {{ Number(inv.total_amount ?? 0).toFixed(2) }}
+        </UiDetailField>
       </div>
 
       <div class="mt-6 overflow-x-auto">
@@ -514,7 +540,7 @@ onMounted(async () => {
               </td>
               <td class="py-2 pr-2 align-top">
                 <UInput v-if="canEditDocumentLines" v-model.number="row.unitCost" type="number" class="w-28" />
-                <span v-else>{{ Number(row.unitCost).toFixed(2) }}</span>
+                <span v-else>{{ formatRs(row.unitCost) }}</span>
               </td>
               <td class="py-2 pr-2 align-top">
                 <UInput
@@ -524,7 +550,7 @@ onMounted(async () => {
                   class="w-28"
                   title="When greater than zero, updates product retail on save"
                 />
-                <span v-else>{{ Number(row.salePrice).toFixed(2) }}</span>
+                <span v-else>{{ formatRs(row.salePrice) }}</span>
               </td>
               <td class="py-2 pr-2 align-top">
                 <UInput v-if="canEditDocumentLines" v-model.number="row.taxRatePct" type="number" class="w-20" />
