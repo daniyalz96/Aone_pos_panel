@@ -270,6 +270,33 @@ router.get("/analytics/weekly", requireAuth, requireRole("admin", "manager"), as
   return res.json(out.slice(-14));
 });
 
+router.get("/analytics/monthly", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  const range = parseDateRange(req.query);
+  if ("error" in range) {
+    return res.status(400).json({ message: "Invalid query params", errors: range.error });
+  }
+
+  const rows = await pool.query(
+    `
+      SELECT
+        to_char(date_trunc('month', expense_date), 'YYYY-MM') AS month,
+        COALESCE(SUM(amount), 0)::numeric(14,2) AS expenses
+      FROM expenses
+      WHERE expense_date >= $1::date AND expense_date <= $2::date
+      GROUP BY 1
+      ORDER BY 1 ASC
+    `,
+    [toDateOnly(range.from), toDateOnly(range.to)],
+  );
+
+  return res.json(
+    rows.rows.map((r) => ({
+      month: String(r.month),
+      expenses: Number(r.expenses),
+    })),
+  );
+});
+
 router.post("/", requireAuth, async (req, res) => {
   const parsed = expenseBodySchema.safeParse(req.body);
   if (!parsed.success) {

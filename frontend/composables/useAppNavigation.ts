@@ -21,6 +21,12 @@ const allLinks: AppLink[] = [
   { label: 'Expenses', icon: 'i-lucide-wallet', to: '/expenses' },
   { label: 'Reports', icon: 'i-lucide-chart-column-big', to: '/reports' },
   {
+    label: 'Sale returns',
+    icon: 'i-lucide-undo-2',
+    to: '/sales-returns',
+    roles: ['admin', 'manager']
+  },
+  {
     label: 'Ledger & GL',
     icon: 'i-lucide-book-text',
     to: '/ledger',

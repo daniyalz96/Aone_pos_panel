@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useApi } from '~/composables/useApi'
+import { useAuth } from '~/composables/useAuth'
 
 const ALL_BRANCH = '__all__'
 const ALL_PAY = '__all__'
@@ -64,7 +66,17 @@ type ReceiptPayload = {
   payments: Array<{ method: string; amount: number }>
 }
 
+const router = useRouter()
 const { request } = useApi()
+const { user } = useAuth()
+
+const canReturnSale = () => {
+  const u = user.value
+  if (!u) return false
+  if ((u.permissions ?? []).includes('refund_approve')) return true
+  return (u.roles ?? []).some((r) => r === 'admin' || r === 'manager')
+}
+
 const errorMessage = ref('')
 const loading = ref(false)
 const branches = ref<Branch[]>([])
@@ -117,6 +129,23 @@ const querySaleInvoices = () => {
 
 const formatMoney = (n: unknown) =>
   `Rs ${Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+function invoiceReturnStatusLabel(status: string): string {
+  const s = status?.toLowerCase() ?? ''
+  if (s === 'partially_returned') return 'Partially returned'
+  if (s === 'returned') return 'Fully returned'
+  if (s === 'voided') return 'Voided'
+  if (s === 'posted') return 'Posted'
+  return status ? status.replace(/_/g, ' ') : 'Posted'
+}
+
+function invoiceReturnStatusColor(status: string): 'neutral' | 'warning' | 'success' | 'error' {
+  const s = status?.toLowerCase() ?? ''
+  if (s === 'returned') return 'success'
+  if (s === 'partially_returned') return 'warning'
+  if (s === 'voided') return 'error'
+  return 'neutral'
+}
 
 const loadReports = async () => {
   loading.value = true
@@ -300,6 +329,10 @@ const printSaleInvoice = async (invoiceId: string) => {
   }
 }
 
+function openSaleReturn(invoiceId: string) {
+  void router.push({ path: '/sales-returns', query: { invoiceId } })
+}
+
 const branchSelectItems = () => [
   { label: 'All branches', value: ALL_BRANCH },
   ...branches.value.map((b) => ({ label: b.name, value: b.id }))
@@ -401,13 +434,13 @@ onMounted(async () => {
             <tr>
               <th class="px-3 py-2 font-medium">Invoice</th>
               <th class="px-3 py-2 font-medium">Date</th>
-              <th class="px-3 py-2 font-medium">Customer</th>
+              <th class="px-3 py-2 font-medium">Return status</th>
               <th class="px-3 py-2 font-medium">Branch</th>
               <th class="px-3 py-2 font-medium">Cashier</th>
               <th class="px-3 py-2 text-right font-medium">Total</th>
               <th class="px-3 py-2 text-right font-medium">Profit</th>
               <th class="px-3 py-2 font-medium">Pay</th>
-              <th class="px-3 py-2 font-medium w-28" />
+              <th class="px-3 py-2 font-medium w-40" />
             </tr>
           </thead>
           <tbody>
@@ -418,7 +451,11 @@ onMounted(async () => {
               <tr v-for="row in saleInvoices" :key="row.id" class="border-b border-slate-100 dark:border-slate-800">
                 <td class="px-3 py-2 font-mono text-xs">{{ row.invoice_number }}</td>
                 <td class="px-3 py-2 whitespace-nowrap">{{ formatDateTime(row.created_at) }}</td>
-                <td class="max-w-[140px] truncate px-3 py-2" :title="row.customer_name ?? ''">{{ row.customer_name ?? '—' }}</td>
+                <td class="px-3 py-2">
+                  <UBadge variant="soft" :color="invoiceReturnStatusColor(row.invoice_status)">
+                    {{ invoiceReturnStatusLabel(row.invoice_status) }}
+                  </UBadge>
+                </td>
                 <td class="px-3 py-2">{{ row.branch_name ?? '—' }}</td>
                 <td class="px-3 py-2">{{ row.cashier_name ?? '—' }}</td>
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatMoney(row.total_amount) }}</td>
@@ -429,7 +466,21 @@ onMounted(async () => {
                   <UBadge variant="soft" color="neutral">{{ row.payment_status }}</UBadge>
                 </td>
                 <td class="px-3 py-2">
-                  <UButton size="xs" variant="soft" icon="i-lucide-printer" @click="printSaleInvoice(row.id)">Print</UButton>
+                  <div class="flex flex-wrap gap-1">
+                    <UButton size="xs" variant="soft" icon="i-lucide-printer" @click="printSaleInvoice(row.id)">
+                      Print
+                    </UButton>
+                    <UButton
+                      v-if="canReturnSale() && row.invoice_status !== 'voided' && row.invoice_status !== 'returned'"
+                      size="xs"
+                      variant="soft"
+                      color="warning"
+                      icon="i-lucide-undo-2"
+                      @click="openSaleReturn(row.id)"
+                    >
+                      Return
+                    </UButton>
+                  </div>
                 </td>
               </tr>
               <tr v-if="!saleInvoices.length">

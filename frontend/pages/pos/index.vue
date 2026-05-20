@@ -724,44 +724,93 @@ function closeLastReceiptPanel() {
 
         <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pt-4">
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            <button
-            v-for="product in activeProducts"
-            :key="product.product_id"
-            type="button"
-            class="relative rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-400 hover:shadow-md hover:shadow-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-500"
-            :disabled="isWorking"
-            @click="openAddItemModal(product)"
-          >
-            <div class="mb-3">
-              <img
-                :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
-                alt="Product image"
-                class="h-36 w-full rounded-lg object-cover sm:h-40"
-              />
-            </div>
-            <UiTruncatedText
-              :text="product.display_name"
-              :lines="3"
-              class="text-left font-medium text-slate-800 dark:text-slate-100"
-            />
-            <div class="mt-1 flex items-center justify-between gap-2 text-xs">
-              <UiTruncatedText
-                :text="product.sku"
-                :lines="1"
-                tag="span"
-                class="min-w-0 flex-1 text-slate-500"
-              />
-              <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-300">
-                <span class="text-slate-500 dark:text-slate-400">Qty</span>
-                <span class="ml-1 font-semibold" :class="stockQtyClass(product.qty_on_hand)">
-                  {{ formatStockQty(product.qty_on_hand) }}
-                </span>
-              </span>
-            </div>
-            <p class="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-              {{ formatCurrency(product.sale_price) }}
-            </p>
-            </button>
+            <UPopover
+              v-for="product in activeProducts"
+              :key="product.product_id"
+              class="block w-full min-w-0"
+              mode="hover"
+              arrow
+              :open-delay="200"
+              :close-delay="120"
+              :content="{ side: 'top', align: 'center', sideOffset: 10 }"
+            >
+              <button
+                type="button"
+                class="pos-product-card relative w-full rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition duration-200 hover:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-500"
+                :disabled="isWorking"
+                @click="openAddItemModal(product)"
+              >
+                <div class="mb-3">
+                  <img
+                    :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
+                    alt=""
+                    class="h-36 w-full rounded-lg object-cover sm:h-40"
+                  />
+                </div>
+                <UiTruncatedText
+                  :text="product.display_name"
+                  :lines="3"
+                  class="text-left font-medium text-slate-800 dark:text-slate-100"
+                />
+                <div class="mt-1 flex items-center justify-between gap-2 text-xs">
+                  <UiTruncatedText
+                    :text="product.sku"
+                    :lines="1"
+                    tag="span"
+                    class="min-w-0 flex-1 text-slate-500"
+                  />
+                  <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-300">
+                    <span class="text-slate-500 dark:text-slate-400">Qty</span>
+                    <span class="ml-1 font-semibold" :class="stockQtyClass(product.qty_on_hand)">
+                      {{ formatStockQty(product.qty_on_hand) }}
+                    </span>
+                  </span>
+                </div>
+                <p class="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                  {{ formatCurrency(product.sale_price) }}
+                </p>
+              </button>
+
+              <template #content>
+                <div
+                  class="w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
+                >
+                  <img
+                    :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
+                    alt=""
+                    class="h-32 w-full object-cover"
+                  />
+                  <div class="space-y-2 p-3 text-sm">
+                    <p class="font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                      {{ product.display_name }}
+                    </p>
+                    <dl class="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                      <div class="flex justify-between gap-2">
+                        <dt class="font-medium text-slate-500">SKU</dt>
+                        <dd class="font-mono text-right">{{ product.sku }}</dd>
+                      </div>
+                      <div class="flex justify-between gap-2">
+                        <dt class="font-medium text-slate-500">Category</dt>
+                        <dd class="text-right">{{ product.category || '—' }}</dd>
+                      </div>
+                      <div class="flex justify-between gap-2">
+                        <dt class="font-medium text-slate-500">In stock</dt>
+                        <dd class="font-semibold tabular-nums" :class="stockQtyClass(product.qty_on_hand)">
+                          {{ formatStockQty(product.qty_on_hand) }}
+                        </dd>
+                      </div>
+                      <div class="flex justify-between gap-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+                        <dt class="font-medium text-slate-500">Price</dt>
+                        <dd class="text-right font-semibold text-emerald-700 dark:text-emerald-400">
+                          {{ formatCurrency(product.sale_price) }}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p class="text-center text-xs text-slate-400">Click card to add to cart</p>
+                  </div>
+                </div>
+              </template>
+            </UPopover>
           </div>
 
           <p v-if="isLoadingProducts" class="mt-4 text-sm text-slate-500">Loading products...</p>
@@ -782,15 +831,16 @@ function closeLastReceiptPanel() {
           </UButton>
         </div>
 
-        <div class="pos-cart-body-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div class="pos-cart-layout mt-2 flex min-h-0 flex-1 flex-col overflow-hidden pr-1">
+          <div class="pos-cart-items-scroll shrink-0 overscroll-contain">
           <div
             v-if="cart.length === 0"
-            class="mt-2 rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500"
+            class="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500"
           >
             Your cart is empty. Tap a product to set quantity, discounts, and add to cart.
           </div>
 
-          <div v-else class="mt-3 space-y-3">
+          <div v-else class="space-y-3">
             <div v-for="item in cart" :key="item.id" class="rounded-xl bg-slate-100 p-3 dark:bg-slate-800">
               <div class="flex items-center justify-between gap-2">
                 <p class="min-w-0 flex-1 text-sm font-medium text-slate-800 dark:text-slate-100">{{ item.product_name }}</p>
@@ -801,82 +851,85 @@ function closeLastReceiptPanel() {
                   <UButton color="neutral" variant="soft" size="xs" icon="i-lucide-plus" :disabled="isWorking" @click="changeQty(item, 1)" />
                 </div>
               </div>
-            <div class="mt-1 flex items-center justify-between text-sm">
-              <p class="text-slate-500">{{ formatCurrency(item.unit_price) }} each</p>
-              <p class="font-semibold text-slate-700 dark:text-slate-100">{{ formatCurrency(item.line_total) }}</p>
-            </div>
-            <p v-if="Number(item.discount_amount ?? 0) > 0" class="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
-              Discount: {{ formatCurrency(Number(item.discount_amount ?? 0)) }} ({{ item.discount_type }})
-            </p>
-            </div>
-          </div>
-
-        <div class="mt-4 space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-slate-700">
-          <div class="flex items-center justify-between">
-            <span class="text-slate-500">Subtotal</span>
-            <span class="font-medium">{{ formatCurrency(subtotal) }}</span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span class="text-slate-500">Discount</span>
-            <span class="font-medium">- {{ formatCurrency(discountTotal) }}</span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span class="text-slate-500">Tax</span>
-            <span class="font-medium">{{ formatCurrency(tax) }}</span>
-          </div>
-          <div class="flex items-center justify-between text-base font-semibold text-slate-900 dark:text-slate-100">
-            <span>Total</span>
-            <span>{{ formatCurrency(total) }}</span>
-          </div>
-        </div>
-
-        <div class="mt-4 grid gap-2 pb-1">
-          <UButton block size="lg" icon="i-lucide-file-check-2" :disabled="!cart.length || !!invoiceId || isWorking" @click="postInvoice">
-            Post Invoice
-          </UButton>
-
-          <div class="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-            <p class="mb-2 text-sm font-medium">Payment</p>
-            <div class="grid gap-2">
-              <UiLabeledField label="Method">
-                <UiSearchableSelect v-model="paymentForm.method" :items="paymentMethods" />
-              </UiLabeledField>
-              <UiLabeledField label="Payment amount" html-for="pos-pay-amount">
-                <UInput id="pos-pay-amount" v-model.number="paymentForm.amount" type="number" class="w-full" />
-              </UiLabeledField>
-              <UiLabeledField v-if="paymentForm.method === 'cash'" label="Tendered cash" html-for="pos-pay-tendered">
-                <UInput id="pos-pay-tendered" v-model.number="paymentForm.tenderedAmount" type="number" class="w-full" />
-              </UiLabeledField>
-              <UButton
-                block
-                color="secondary"
-                icon="i-lucide-credit-card"
-                :loading="isCollectingPayment"
-                :disabled="!canCollect || isCollectingPayment || isWorking"
-                @click="collectPayment"
-              >
-                Collect Payment
-              </UButton>
-              <div class="rounded-md bg-slate-50 px-2 py-2 dark:bg-slate-800/80">
-                <UCheckbox v-model="showLastReceipt" label="Show last receipt after payment" />
+              <div class="mt-1 flex items-center justify-between text-sm">
+                <p class="text-slate-500">{{ formatCurrency(item.unit_price) }} each</p>
+                <p class="font-semibold text-slate-700 dark:text-slate-100">{{ formatCurrency(item.line_total) }}</p>
               </div>
-              <UButton
-                block
-                color="neutral"
-                variant="soft"
-                icon="i-lucide-printer"
-                :disabled="!receiptPayload"
-                @click="printLastReceipt"
-              >
-                Print last receipt
-              </UButton>
+              <p v-if="Number(item.discount_amount ?? 0) > 0" class="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
+                Discount: {{ formatCurrency(Number(item.discount_amount ?? 0)) }} ({{ item.discount_type }})
+              </p>
+            </div>
+          </div>
+          </div>
+
+          <div class="pos-cart-footer-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div class="pos-cart-summary mt-4 space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-slate-700">
+            <div class="flex items-center justify-between">
+              <span class="text-slate-500">Subtotal</span>
+              <span class="font-medium">{{ formatCurrency(subtotal) }}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-slate-500">Discount</span>
+              <span class="font-medium">- {{ formatCurrency(discountTotal) }}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-slate-500">Tax</span>
+              <span class="font-medium">{{ formatCurrency(tax) }}</span>
+            </div>
+            <div class="flex items-center justify-between text-base font-semibold text-slate-900 dark:text-slate-100">
+              <span>Total</span>
+              <span>{{ formatCurrency(total) }}</span>
             </div>
           </div>
 
-          <UButton block color="neutral" variant="soft" icon="i-lucide-printer" :disabled="isWorking || cart.length === 0" @click="printBill">
-            Print Proforma
-          </UButton>
-        </div>
+          <div class="mt-4 grid gap-2 pb-2">
+            <UButton block size="lg" icon="i-lucide-file-check-2" :disabled="!cart.length || !!invoiceId || isWorking" @click="postInvoice">
+              Post Invoice
+            </UButton>
+
+            <div class="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+              <p class="mb-2 text-sm font-medium">Payment</p>
+              <div class="grid gap-2">
+                <UiLabeledField label="Method">
+                  <UiSearchableSelect v-model="paymentForm.method" :items="paymentMethods" />
+                </UiLabeledField>
+                <UiLabeledField label="Payment amount" html-for="pos-pay-amount">
+                  <UInput id="pos-pay-amount" v-model.number="paymentForm.amount" type="number" class="w-full" />
+                </UiLabeledField>
+                <UiLabeledField v-if="paymentForm.method === 'cash'" label="Tendered cash" html-for="pos-pay-tendered">
+                  <UInput id="pos-pay-tendered" v-model.number="paymentForm.tenderedAmount" type="number" class="w-full" />
+                </UiLabeledField>
+                <UButton
+                  block
+                  color="secondary"
+                  icon="i-lucide-credit-card"
+                  :loading="isCollectingPayment"
+                  :disabled="!canCollect || isCollectingPayment || isWorking"
+                  @click="collectPayment"
+                >
+                  Collect Payment
+                </UButton>
+                <div class="rounded-md bg-slate-50 px-2 py-2 dark:bg-slate-800/80">
+                  <UCheckbox v-model="showLastReceipt" label="Show last receipt after payment" />
+                </div>
+                <UButton
+                  block
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-printer"
+                  :disabled="!receiptPayload"
+                  @click="printLastReceipt"
+                >
+                  Print last receipt
+                </UButton>
+              </div>
+            </div>
+
+            <UButton block color="neutral" variant="soft" icon="i-lucide-printer" :disabled="isWorking || cart.length === 0" @click="printBill">
+              Print Proforma
+            </UButton>
+          </div>
+          </div>
         </div>
       </UCard>
     </section>
@@ -1086,6 +1139,19 @@ main:has(.pos-billing-root) {
   background: transparent;
 }
 
+.pos-product-card:not(:disabled):hover {
+  transform: translateY(-4px) scale(1.02);
+  box-shadow:
+    0 10px 25px -5px rgb(16 185 129 / 0.15),
+    0 8px 10px -6px rgb(15 23 42 / 0.08);
+  z-index: 10;
+}
+
+.pos-product-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* Cart column: fill grid cell; line items scroll when last receipt panel is open */
 .pos-billing-root > section {
   align-items: stretch;
@@ -1093,6 +1159,13 @@ main:has(.pos-billing-root) {
 
 .pos-cart-card {
   max-height: 100%;
+}
+
+@media (max-width: 1279px) {
+  .pos-cart-card {
+    max-height: min(72dvh, 38rem);
+    min-height: 18rem;
+  }
 }
 
 .pos-cart-card :deep(.u-card-body),
@@ -1104,17 +1177,41 @@ main:has(.pos-billing-root) {
   overflow: hidden;
 }
 
-.pos-cart-body-scroll {
+.pos-cart-layout {
+  min-height: 0;
+}
+
+/* Cart line items: show 3 rows, then scroll */
+.pos-cart-items-scroll {
+  max-height: min(calc(3 * 5.25rem + 0.75rem * 2), 36dvh);
+  overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
   scrollbar-color: rgb(148 163 184 / 0.6) transparent;
 }
 
-.pos-cart-body-scroll::-webkit-scrollbar {
+.pos-cart-items-scroll::-webkit-scrollbar {
   width: 6px;
 }
 
-.pos-cart-body-scroll::-webkit-scrollbar-thumb {
+.pos-cart-items-scroll::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgb(148 163 184 / 0.55);
+}
+
+/* Totals + payment scroll on short viewports */
+.pos-cart-footer-scroll {
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 163 184 / 0.6) transparent;
+}
+
+.pos-cart-footer-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pos-cart-footer-scroll::-webkit-scrollbar-thumb {
   border-radius: 9999px;
   background: rgb(148 163 184 / 0.55);
 }

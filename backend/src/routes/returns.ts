@@ -1,11 +1,108 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { postJournalEntry } from "../services/ledger.js";
 import { createAuditLog } from "../utils/audit.js";
 
 const router = Router();
+
+function userCanRefund(user: Request["user"]): boolean {
+  if (!user) return false;
+  if (user.permissions.includes("refund_approve")) return true;
+  return (user.roles ?? []).some((r) => r === "admin" || r === "manager");
+}
+
+router.get("/invoice/:invoiceId/detail", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  const invoiceId = Array.isArray(req.params.invoiceId) ? req.params.invoiceId[0] : req.params.invoiceId;
+
+  const invoiceResult = await pool.query(
+    `
+      SELECT
+        i.id,
+        i.invoice_number,
+        i.invoice_status,
+        i.payment_status,
+        i.total_amount,
+        i.return_total,
+        i.created_at,
+        o.customer_name,
+        u.full_name AS cashier_name,
+        b.name AS branch_name
+      FROM invoices i
+      JOIN orders o ON o.id = i.order_id
+      LEFT JOIN users u ON u.id = i.posted_by
+      LEFT JOIN branches b ON b.id = i.branch_id
+      WHERE i.id = $1
+    `,
+    [invoiceId],
+  );
+  if (invoiceResult.rowCount === 0) {
+    return res.status(404).json({ message: "Invoice not found" });
+  }
+
+  const invoice = invoiceResult.rows[0];
+  if (invoice.invoice_status === "voided") {
+    return res.status(409).json({ message: "Cannot return items on a voided invoice" });
+  }
+  if (invoice.invoice_status === "returned") {
+    return res.status(409).json({ message: "This invoice is fully returned" });
+  }
+
+  const lineRows = await pool.query(
+    `
+      SELECT
+        ii.id,
+        ii.product_id,
+        ii.product_name,
+        p.sku,
+        ii.qty,
+        ii.unit_price,
+        ii.line_total,
+        COALESCE((
+          SELECT SUM(sri.qty)
+          FROM sales_return_items sri
+          WHERE sri.invoice_item_id = ii.id
+        ), 0)::numeric(14,3) AS qty_returned
+      FROM invoice_items ii
+      LEFT JOIN products p ON p.id = ii.product_id
+      WHERE ii.invoice_id = $1
+      ORDER BY ii.created_at ASC
+    `,
+    [invoiceId],
+  );
+
+  const lines = lineRows.rows.map((row) => {
+    const soldQty = Number(row.qty);
+    const alreadyReturned = Number(row.qty_returned);
+    const maxReturn = Math.max(0, Number((soldQty - alreadyReturned).toFixed(3)));
+    return {
+      id: row.id,
+      productId: row.product_id,
+      productName: row.product_name,
+      sku: row.sku ?? "",
+      qty: soldQty,
+      qtyReturned: alreadyReturned,
+      maxReturn,
+      unitPrice: Number(row.unit_price),
+      lineTotal: Number(row.line_total),
+    };
+  });
+
+  return res.json({
+    id: invoice.id,
+    invoiceNumber: invoice.invoice_number,
+    invoiceStatus: invoice.invoice_status,
+    paymentStatus: invoice.payment_status,
+    totalAmount: Number(invoice.total_amount),
+    returnTotal: Number(invoice.return_total ?? 0),
+    createdAt: invoice.created_at,
+    customerName: invoice.customer_name,
+    cashierName: invoice.cashier_name,
+    branchName: invoice.branch_name,
+    lines,
+  });
+});
 
 router.post("/", requireAuth, async (req, res) => {
   const schema = z.object({
@@ -26,8 +123,8 @@ router.post("/", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid payload", errors: parsed.error.flatten() });
   }
 
-  if (!req.user?.permissions.includes("refund_approve")) {
-    return res.status(403).json({ message: "Missing permission: refund_approve" });
+  if (!userCanRefund(req.user)) {
+    return res.status(403).json({ message: "Missing permission to process sale returns" });
   }
 
   const client = await pool.connect();

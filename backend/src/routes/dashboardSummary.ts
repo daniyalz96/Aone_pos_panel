@@ -2,6 +2,10 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 
+function toDateOnly(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 const dashboardSummaryQuerySchema = z.object({
   branchId: z.string().uuid().optional(),
   cashierId: z.string().uuid().optional(),
@@ -77,8 +81,26 @@ export async function handleDashboardSummary(req: Request, res: Response) {
     WHERE expense_date >= $1::date AND expense_date <= $2::date
   `;
 
+  const grossProfitSql = `
+    SELECT COALESCE(SUM(ip.gross_profit), 0)::numeric(14,2) AS gross_profit
+    FROM invoices i
+    LEFT JOIN (
+      SELECT
+        ii.invoice_id,
+        COALESCE(SUM(ii.pre_tax_amount - ii.qty * p.cost_price), 0)::numeric(14,2) AS gross_profit
+      FROM invoice_items ii
+      JOIN products p ON p.id = ii.product_id
+      GROUP BY ii.invoice_id
+    ) ip ON ip.invoice_id = i.id
+    WHERE i.created_at BETWEEN $1 AND $2
+      AND i.invoice_status <> 'voided'
+      AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+      AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+  `;
+
   try {
-    const [todayRow, yesterdayRow, pendingRow, lowStockRow, todayExpRow, yesterdayExpRow] = await Promise.all([
+    const [todayRow, yesterdayRow, pendingRow, lowStockRow, todayExpRow, yesterdayExpRow, todayProfitRow, yesterdayProfitRow] =
+      await Promise.all([
       pool.query(salesInvoiceSql, rangeParams(todayStart, now)),
       pool.query(salesInvoiceSql, rangeParams(yesterdayStart, yesterdayEnd)),
       pool.query(pendingSql, [branchId, cashierId]),
@@ -112,8 +134,10 @@ export async function handleDashboardSummary(req: Request, res: Response) {
             `,
             [threshold],
           ),
-      pool.query(expenseByTypeSql, [todayStart, now]),
-      pool.query(expenseRangeSql, [yesterdayStart, yesterdayEnd]),
+      pool.query(expenseByTypeSql, [toDateOnly(todayStart), toDateOnly(now)]),
+      pool.query(expenseRangeSql, [toDateOnly(yesterdayStart), toDateOnly(yesterdayEnd)]),
+      pool.query(grossProfitSql, rangeParams(todayStart, now)),
+      pool.query(grossProfitSql, rangeParams(yesterdayStart, yesterdayEnd)),
     ]);
 
     const t = todayRow.rows[0];
@@ -121,6 +145,8 @@ export async function handleDashboardSummary(req: Request, res: Response) {
     const p = pendingRow.rows[0];
     const te = todayExpRow.rows[0];
     const ye = yesterdayExpRow.rows[0];
+    const todayProfit = Number(todayProfitRow.rows[0].gross_profit);
+    const yesterdayProfit = Number(yesterdayProfitRow.rows[0].gross_profit);
 
     const todayExpTotal = Number(te.total);
     const todaySales = Number(t.net_sales);
@@ -132,6 +158,8 @@ export async function handleDashboardSummary(req: Request, res: Response) {
       yesterday_invoice_count: y.invoice_count,
       pending_payment_amount: p.outstanding,
       pending_payment_invoice_count: p.invoice_count,
+      today_gross_profit: todayProfit,
+      yesterday_gross_profit: yesterdayProfit,
       low_stock_item_count: lowStockRow.rows[0].c,
       today_expenses_total: todayExpTotal,
       today_expenses_personal: Number(te.personal),

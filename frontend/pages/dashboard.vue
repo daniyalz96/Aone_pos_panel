@@ -23,16 +23,20 @@ type ProfitMarginRow = {
   margin_percent: number | string
 }
 
-type WeekSalesProfitPoint = { label: string; sales: number; profit: number }
+type WeekSalesProfitPoint = { label: string; sales: number; profit: number; expenses: number }
+type MonthlyProfitPoint = { label: string; profit: number; expenses: number }
 type TopProfitProductPoint = { productName: string; profit: number }
+
+type WeeklyExpenseRow = { period: string; expenses: number }
+type MonthlyExpenseRow = { month: string; expenses: number }
 
 type DashboardSummary = {
   today_sales: number | string
   today_invoice_count: number
   yesterday_sales: number | string
   yesterday_invoice_count: number
-  pending_payment_amount: number | string
-  pending_payment_invoice_count: number
+  today_gross_profit?: number | string
+  yesterday_gross_profit?: number | string
   low_stock_item_count: number
   today_expenses_total?: number | string
   today_expenses_personal?: number | string
@@ -86,7 +90,7 @@ const quickStats = computed<StatCard[]>(() => {
     return [
       { title: 'Today Sales', value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: true },
       { title: 'Transactions', value: '…', delta: 'Loading…', icon: 'i-lucide-receipt-text', positive: true },
-      { title: 'Pending Payments', value: '…', delta: 'Loading…', icon: 'i-lucide-circle-alert', positive: false },
+      { title: 'Total Profit', value: '…', delta: 'Loading…', icon: 'i-lucide-trending-up', positive: true, to: '/reports' },
       { title: 'Low Stock Items', value: '…', delta: 'Loading…', icon: 'i-lucide-box', positive: false, to: '/restock' },
       { title: "Today's Expenses", value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
     ]
@@ -96,7 +100,7 @@ const quickStats = computed<StatCard[]>(() => {
     return [
       { title: 'Today Sales', value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false },
       { title: 'Transactions', value: '—', delta: 'Could not load', icon: 'i-lucide-receipt-text', positive: false },
-      { title: 'Pending Payments', value: '—', delta: 'Could not load', icon: 'i-lucide-circle-alert', positive: false },
+      { title: 'Total Profit', value: '—', delta: 'Could not load', icon: 'i-lucide-trending-up', positive: false, to: '/reports' },
       { title: 'Low Stock Items', value: '—', delta: 'Could not load', icon: 'i-lucide-box', positive: false, to: '/restock' },
       { title: "Today's Expenses", value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
     ]
@@ -107,12 +111,13 @@ const quickStats = computed<StatCard[]>(() => {
   const ySales = Number(s.yesterday_sales)
   const txToday = Number(s.today_invoice_count)
   const txYest = Number(s.yesterday_invoice_count)
-  const pendingAmt = Number(s.pending_payment_amount)
-  const pendingCnt = Number(s.pending_payment_invoice_count)
+  const todayProfit = Number(s.today_gross_profit ?? 0)
+  const yProfit = Number(s.yesterday_gross_profit ?? 0)
   const lowStock = Number(s.low_stock_item_count)
 
   const salesPctGood = todaySales >= ySales
   const txGood = txToday >= txYest
+  const profitGood = todayProfit >= yProfit
 
   return [
     {
@@ -130,14 +135,12 @@ const quickStats = computed<StatCard[]>(() => {
       positive: txGood
     },
     {
-      title: 'Pending Payments',
-      value: fmtPkr(pendingAmt),
-      delta:
-        pendingCnt === 0
-          ? 'All invoices paid'
-          : `${pendingCnt} invoice${pendingCnt === 1 ? '' : 's'} outstanding`,
-      icon: 'i-lucide-circle-alert',
-      positive: pendingAmt === 0
+      title: 'Total Profit',
+      value: fmtPkr(todayProfit),
+      delta: pctVsYesterday(todayProfit, yProfit),
+      icon: 'i-lucide-trending-up',
+      positive: profitGood,
+      to: '/reports'
     },
     {
       title: 'Low Stock Items',
@@ -178,13 +181,13 @@ const DEMO_HOURLY = [
 ]
 
 const DEMO_WEEK_SALES_PROFIT: WeekSalesProfitPoint[] = [
-  { label: 'Sat', sales: 72_400, profit: 18_200 },
-  { label: 'Sun', sales: 68_100, profit: 16_800 },
-  { label: 'Mon', sales: 91_200, profit: 24_400 },
-  { label: 'Tue', sales: 84_000, profit: 21_600 },
-  { label: 'Wed', sales: 96_500, profit: 26_100 },
-  { label: 'Thu', sales: 88_300, profit: 22_000 },
-  { label: 'Fri', sales: 102_000, profit: 28_800 }
+  { label: 'Sat', sales: 72_400, profit: 18_200, expenses: 4_200 },
+  { label: 'Sun', sales: 68_100, profit: 16_800, expenses: 3_800 },
+  { label: 'Mon', sales: 91_200, profit: 24_400, expenses: 5_100 },
+  { label: 'Tue', sales: 84_000, profit: 21_600, expenses: 4_600 },
+  { label: 'Wed', sales: 96_500, profit: 26_100, expenses: 5_400 },
+  { label: 'Thu', sales: 88_300, profit: 22_000, expenses: 4_900 },
+  { label: 'Fri', sales: 102_000, profit: 28_800, expenses: 6_200 }
 ]
 
 const DEMO_TOP_PROFIT_PRODUCTS: TopProfitProductPoint[] = [
@@ -196,13 +199,13 @@ const DEMO_TOP_PROFIT_PRODUCTS: TopProfitProductPoint[] = [
   { productName: 'Laundry soap', profit: 6_900 }
 ]
 
-const DEMO_MONTHLY_PROFIT = [
-  { label: 'Dec', value: 42_000 },
-  { label: 'Jan', value: 51_000 },
-  { label: 'Feb', value: 47_500 },
-  { label: 'Mar', value: 58_200 },
-  { label: 'Apr', value: 62_100 },
-  { label: 'May', value: 55_400 }
+const DEMO_MONTHLY_PROFIT: MonthlyProfitPoint[] = [
+  { label: 'Dec', profit: 42_000, expenses: 18_500 },
+  { label: 'Jan', profit: 51_000, expenses: 21_200 },
+  { label: 'Feb', profit: 47_500, expenses: 19_800 },
+  { label: 'Mar', profit: 58_200, expenses: 22_400 },
+  { label: 'Apr', profit: 62_100, expenses: 24_100 },
+  { label: 'May', profit: 55_400, expenses: 23_600 }
 ]
 
 /** Demo pie slices: monthly invoice totals (Rs) — shown when analytics unavailable */
@@ -226,7 +229,7 @@ const analyticsLive = ref(false)
 const hourlySeries = ref<{ label: string; amount: number }[]>([...DEMO_HOURLY])
 const weeklySalesProfitSeries = ref<WeekSalesProfitPoint[]>([...DEMO_WEEK_SALES_PROFIT])
 const topProfitProducts = ref<TopProfitProductPoint[]>([...DEMO_TOP_PROFIT_PRODUCTS])
-const monthlyProfitSeries = ref<{ label: string; value: number }[]>([...DEMO_MONTHLY_PROFIT])
+const monthlyProfitSeries = ref<MonthlyProfitPoint[]>([...DEMO_MONTHLY_PROFIT])
 const monthlySalesPieSeries = ref<{ name: string; y: number }[]>([...DEMO_MONTHLY_SALES_PIE])
 
 function startOfDay(d: Date) {
@@ -268,7 +271,11 @@ function monthlySalesRowsToPie(rows: SalesTrendRow[]): { name: string; y: number
   }))
 }
 
-function padLastDaysSalesProfit(rows: SalesTrendRow[], dayCount = 7): WeekSalesProfitPoint[] {
+function padLastDaysSalesProfit(
+  rows: SalesTrendRow[],
+  expenseByDay: Map<string, number>,
+  dayCount = 7
+): WeekSalesProfitPoint[] {
   const map = new Map<string, SalesTrendRow>()
   for (const r of rows) {
     const key = r.period.slice(0, 10)
@@ -285,10 +292,27 @@ function padLastDaysSalesProfit(rows: SalesTrendRow[], dayCount = 7): WeekSalesP
     out.push({
       label: d.toLocaleDateString(undefined, { weekday: 'short' }),
       sales: row ? Number(row.total_sales) : 0,
-      profit: row ? Number(row.gross_profit ?? 0) : 0
+      profit: row ? Number(row.gross_profit ?? 0) : 0,
+      expenses: expenseByDay.get(key) ?? 0
     })
   }
   return out
+}
+
+function expenseRowsToDayMap(rows: WeeklyExpenseRow[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const r of rows) {
+    map.set(String(r.period).slice(0, 10), Number(r.expenses) || 0)
+  }
+  return map
+}
+
+function expenseRowsToMonthMap(rows: MonthlyExpenseRow[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const r of rows) {
+    map.set(String(r.month), Number(r.expenses) || 0)
+  }
+  return map
 }
 
 async function loadAnalytics() {
@@ -323,11 +347,14 @@ async function loadAnalytics() {
     const rangeWeek = qsRange(weekStart, now)
     const monthRange = qsRange(sixMonthsBack, now)
 
-    const [hourlyRes, weekRes, topRes, marginRes, monthPieRes] = await Promise.allSettled([
+    const [hourlyRes, weekRes, weekExpRes, topRes, marginRes, monthExpRes, monthPieRes] =
+      await Promise.allSettled([
       request<SalesTrendRow[]>(`/reports/analytics/sales-trend?bucket=hour&${rangeToday}`),
       request<SalesTrendRow[]>(`/reports/analytics/sales-trend?bucket=day&${rangeWeek}`),
+      request<WeeklyExpenseRow[]>(`/expenses/analytics/weekly?${rangeWeek}`),
       request<TopItemRow[]>(`/reports/analytics/top-items?limit=8&${qsRange(thirtyBack, now)}`),
       request<ProfitMarginRow[]>(`/reports/profit-margin?${monthRange}`),
+      request<MonthlyExpenseRow[]>(`/expenses/analytics/monthly?${monthRange}`),
       request<SalesTrendRow[]>(`/reports/analytics/sales-trend?bucket=month&${monthRange}`)
     ])
 
@@ -350,7 +377,11 @@ async function loadAnalytics() {
     }
 
     if (weekRes.status === 'fulfilled') {
-      weeklySalesProfitSeries.value = padLastDaysSalesProfit(weekRes.value, 7)
+      const expenseByDay =
+        weekExpRes.status === 'fulfilled'
+          ? expenseRowsToDayMap(weekExpRes.value)
+          : new Map<string, number>()
+      weeklySalesProfitSeries.value = padLastDaysSalesProfit(weekRes.value, expenseByDay, 7)
       anyLive = true
     } else {
       weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
@@ -376,6 +407,10 @@ async function loadAnalytics() {
     if (marginRes.status === 'fulfilled') {
       anyLive = true
       const marginRows = marginRes.value
+      const expenseByMonth =
+        monthExpRes.status === 'fulfilled'
+          ? expenseRowsToMonthMap(monthExpRes.value)
+          : new Map<string, number>()
       const months = [...marginRows].sort((a, b) => a.month.localeCompare(b.month))
       const lastSix = months.slice(-6)
       if (lastSix.length > 0) {
@@ -385,7 +420,11 @@ async function loadAnalytics() {
           const label = Number.isFinite(monthNum)
             ? new Date(2000, monthNum - 1, 1).toLocaleString(undefined, { month: 'short' })
             : m.month
-          return { label, value: Number(m.gross_profit) }
+          return {
+            label,
+            profit: Number(m.gross_profit),
+            expenses: expenseByMonth.get(m.month) ?? 0
+          }
         })
       } else {
         monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
@@ -548,7 +587,7 @@ watch(canViewAnalytics, (ok) => {
           <div>
             <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">7-day sales &amp; profit</h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Posted sales vs gross profit (revenue ex-tax minus cost) · last 7 days
+              Sales, gross profit, and recorded expenses · last 7 days
             </p>
           </div>
           <div class="flex items-center gap-2">
@@ -594,7 +633,9 @@ watch(canViewAnalytics, (ok) => {
       <div class="mb-4 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Monthly gross profit</h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400">From posted invoice lines minus product cost · recent months</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            Gross profit vs recorded expenses · recent months
+          </p>
         </div>
         <div class="flex items-center gap-2">
           <UBadge v-if="analyticsLoading" color="neutral" variant="soft">Loading…</UBadge>

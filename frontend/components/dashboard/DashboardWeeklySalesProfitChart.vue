@@ -6,6 +6,7 @@ export type WeeklySalesProfitPoint = {
   label: string
   sales: number
   profit: number
+  expenses: number
 }
 
 const props = defineProps<{
@@ -19,19 +20,18 @@ function chartData() {
   const labels = props.points.map((p) => p.label)
   const sales = props.points.map((p) => Number(p.sales) || 0)
   const profit = props.points.map((p) => Number(p.profit) || 0)
-  return { labels, sales, profit }
+  const expenses = props.points.map((p) => Number(p.expenses) || 0)
+  return { labels, sales, profit, expenses }
 }
 
 async function draw() {
   if (!import.meta.client || !hostRef.value) return
   const Highcharts = (await import('highcharts')).default
 
-  if (chart) {
-    chart.destroy()
-    chart = null
-  }
+  chart?.destroy()
+  chart = null
 
-  const { labels, sales, profit } = chartData()
+  const { labels, sales, profit, expenses } = chartData()
 
   chart = Highcharts.chart(hostRef.value, {
     ...dashboardChartBase,
@@ -93,23 +93,19 @@ async function draw() {
         name: 'Profit',
         data: profit,
         color: '#6366f1'
+      },
+      {
+        type: 'column',
+        name: 'Expenses',
+        data: expenses,
+        color: '#f59e0b'
       }
     ]
   })
 }
 
-onMounted(() => {
-  void draw()
-})
-
-watch(
-  () => props.points,
-  () => {
-    void draw()
-  },
-  { deep: true }
-)
-
+onMounted(() => void draw())
+watch(() => props.points, () => void draw(), { deep: true })
 onUnmounted(() => {
   chart?.destroy()
   chart = null
