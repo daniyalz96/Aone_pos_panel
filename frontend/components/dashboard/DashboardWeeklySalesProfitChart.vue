@@ -73,7 +73,18 @@ async function draw() {
         borderRadius: 5,
         borderWidth: 0,
         groupPadding: 0.12,
-        pointPadding: 0.05
+        pointPadding: 0.05,
+        dataLabels: {
+          enabled: true,
+          crop: false,
+          overflow: 'none',
+          formatter() {
+            const y = Number(this.y)
+            if (!y) return ''
+            return compactRsAxis(y)
+          },
+          style: { fontSize: '9px', fontWeight: '600', textOutline: 'none', color: '#475569' }
+        }
       }
     },
     legend: {

@@ -13,3 +13,9 @@ body {
 .glass-panel {
   @apply rounded-2xl border border-white/40 bg-white/80 shadow-sm backdrop-blur dark:border-white/10 dark:bg-slate-900/70;
 }
+
+/* Horizontal scroll for wide data tables on small screens */
+.table-scroll {
+  @apply -mx-1 overflow-x-auto px-1;
+  -webkit-overflow-scrolling: touch;
+}

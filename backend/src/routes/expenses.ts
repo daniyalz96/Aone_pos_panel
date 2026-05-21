@@ -33,8 +33,18 @@ function parseDateRange(query: unknown) {
   };
 }
 
-function toDateOnly(d: Date): string {
-  return d.toISOString().slice(0, 10);
+/** Calendar date YYYY-MM-DD (local), safe for pg DATE/TIMESTAMP values from node-pg. */
+function toDateOnly(d: Date | string): string {
+  if (typeof d === "string") {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(d.trim());
+    if (m) return m[1];
+  }
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d).slice(0, 10);
+  const y = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${month}-${day}`;
 }
 
 function postsToLedger(type: ExpenseType): boolean {
@@ -216,19 +226,19 @@ router.get("/analytics/weekly", requireAuth, requireRole("admin", "manager"), as
         GROUP BY expense_date
         ORDER BY expense_date ASC
       `,
-      [range.from, range.to],
+      [toDateOnly(range.from), toDateOnly(range.to)],
     ),
   ]);
 
   const salesMap = new Map<string, number>();
   for (const r of salesRows.rows) {
-    const key = String(r.day).slice(0, 10);
+    const key = toDateOnly(r.day as Date | string);
     salesMap.set(key, Number(r.sales));
   }
 
   const expenseMap = new Map<string, { expenses: number; personal: number; business: number; charity: number }>();
   for (const r of expenseRows.rows) {
-    const key = String(r.day).slice(0, 10);
+    const key = toDateOnly(r.day as Date | string);
     expenseMap.set(key, {
       expenses: Number(r.expenses),
       personal: Number(r.personal),

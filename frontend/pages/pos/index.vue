@@ -670,8 +670,8 @@ function closeLastReceiptPanel() {
 </script>
 
 <template>
-  <div class="pos-billing-root flex h-[calc(100dvh-10.5rem)] min-h-[28rem] flex-col gap-4 overflow-hidden">
-    <section class="grid min-h-0 min-w-0 flex-1 gap-6 overflow-hidden xl:grid-cols-3">
+  <div class="pos-billing-root flex flex-col gap-4 max-xl:min-h-0 xl:h-[calc(100dvh-10.5rem)] xl:min-h-[28rem] xl:overflow-hidden">
+    <section class="grid min-h-0 min-w-0 gap-6 max-xl:min-h-0 xl:flex-1 xl:overflow-hidden xl:grid-cols-3">
       <UCard
         class="flex min-h-0 flex-col overflow-hidden xl:col-span-2"
         :ui="{ body: 'flex min-h-0 flex-1 flex-col' }"
@@ -1114,8 +1114,10 @@ function closeLastReceiptPanel() {
 </template>
 
 <style>
-main:has(.pos-billing-root) {
-  overflow: hidden;
+@media (min-width: 1280px) {
+  main:has(.pos-billing-root) {
+    overflow: hidden;
+  }
 }
 </style>
 

@@ -76,20 +76,11 @@ function pctVsYesterday(today: number, yesterday: number) {
   return `${sign}${pct.toFixed(1)}% vs yesterday`
 }
 
-function countVsYesterday(today: number, yesterday: number) {
-  const d = today - yesterday
-  if (yesterday === 0 && today === 0) return 'No invoices yet'
-  if (yesterday === 0) return `${today} invoice${today === 1 ? '' : 's'} today`
-  const sign = d >= 0 ? '+' : ''
-  return `${sign}${d} vs yesterday`
-}
-
 const quickStats = computed<StatCard[]>(() => {
   const loading = kpiLoading.value && !kpiSummary.value
   if (loading) {
     return [
-      { title: 'Today Sales', value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: true },
-      { title: 'Transactions', value: '…', delta: 'Loading…', icon: 'i-lucide-receipt-text', positive: true },
+      { title: 'Today Sales', value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: true, to: '/reports' },
       { title: 'Total Profit', value: '…', delta: 'Loading…', icon: 'i-lucide-trending-up', positive: true, to: '/reports' },
       { title: 'Low Stock Items', value: '…', delta: 'Loading…', icon: 'i-lucide-box', positive: false, to: '/restock' },
       { title: "Today's Expenses", value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
@@ -98,8 +89,7 @@ const quickStats = computed<StatCard[]>(() => {
 
   if (kpiError.value || !kpiSummary.value) {
     return [
-      { title: 'Today Sales', value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false },
-      { title: 'Transactions', value: '—', delta: 'Could not load', icon: 'i-lucide-receipt-text', positive: false },
+      { title: 'Today Sales', value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/reports' },
       { title: 'Total Profit', value: '—', delta: 'Could not load', icon: 'i-lucide-trending-up', positive: false, to: '/reports' },
       { title: 'Low Stock Items', value: '—', delta: 'Could not load', icon: 'i-lucide-box', positive: false, to: '/restock' },
       { title: "Today's Expenses", value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
@@ -109,14 +99,11 @@ const quickStats = computed<StatCard[]>(() => {
   const s = kpiSummary.value
   const todaySales = Number(s.today_sales)
   const ySales = Number(s.yesterday_sales)
-  const txToday = Number(s.today_invoice_count)
-  const txYest = Number(s.yesterday_invoice_count)
   const todayProfit = Number(s.today_gross_profit ?? 0)
   const yProfit = Number(s.yesterday_gross_profit ?? 0)
   const lowStock = Number(s.low_stock_item_count)
 
   const salesPctGood = todaySales >= ySales
-  const txGood = txToday >= txYest
   const profitGood = todayProfit >= yProfit
 
   return [
@@ -125,14 +112,8 @@ const quickStats = computed<StatCard[]>(() => {
       value: fmtPkr(todaySales),
       delta: pctVsYesterday(todaySales, ySales),
       icon: 'i-lucide-wallet',
-      positive: salesPctGood
-    },
-    {
-      title: 'Transactions',
-      value: String(txToday),
-      delta: countVsYesterday(txToday, txYest),
-      icon: 'i-lucide-receipt-text',
-      positive: txGood
+      positive: salesPctGood,
+      to: '/reports'
     },
     {
       title: 'Total Profit',
@@ -238,6 +219,22 @@ function startOfDay(d: Date) {
   return x
 }
 
+function localDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function parsePeriodKey(period: string): string {
+  const s = String(period).trim()
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(s)
+  if (iso) return iso[1]
+  const d = new Date(s)
+  if (!Number.isNaN(d.getTime())) return localDateKey(d)
+  return s.slice(0, 10)
+}
+
 function qsRange(from: Date, to: Date) {
   const f = encodeURIComponent(from.toISOString())
   const t = encodeURIComponent(to.toISOString())
@@ -278,8 +275,7 @@ function padLastDaysSalesProfit(
 ): WeekSalesProfitPoint[] {
   const map = new Map<string, SalesTrendRow>()
   for (const r of rows) {
-    const key = r.period.slice(0, 10)
-    map.set(key, r)
+    map.set(parsePeriodKey(r.period), r)
   }
   const out: WeekSalesProfitPoint[] = []
   const today = new Date()
@@ -287,7 +283,7 @@ function padLastDaysSalesProfit(
     const d = new Date(today)
     d.setHours(12, 0, 0, 0)
     d.setDate(d.getDate() - i)
-    const key = d.toISOString().slice(0, 10)
+    const key = localDateKey(d)
     const row = map.get(key)
     out.push({
       label: d.toLocaleDateString(undefined, { weekday: 'short' }),
@@ -302,7 +298,7 @@ function padLastDaysSalesProfit(
 function expenseRowsToDayMap(rows: WeeklyExpenseRow[]): Map<string, number> {
   const map = new Map<string, number>()
   for (const r of rows) {
-    map.set(String(r.period).slice(0, 10), Number(r.expenses) || 0)
+    map.set(parsePeriodKey(r.period), Number(r.expenses) || 0)
   }
   return map
 }
@@ -376,12 +372,13 @@ async function loadAnalytics() {
       hourlySeries.value = [...DEMO_HOURLY]
     }
 
-    if (weekRes.status === 'fulfilled') {
+    if (weekRes.status === 'fulfilled' || weekExpRes.status === 'fulfilled') {
       const expenseByDay =
         weekExpRes.status === 'fulfilled'
           ? expenseRowsToDayMap(weekExpRes.value)
           : new Map<string, number>()
-      weeklySalesProfitSeries.value = padLastDaysSalesProfit(weekRes.value, expenseByDay, 7)
+      const salesRows = weekRes.status === 'fulfilled' ? weekRes.value : []
+      weeklySalesProfitSeries.value = padLastDaysSalesProfit(salesRows, expenseByDay, 7)
       anyLive = true
     } else {
       weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
@@ -481,7 +478,7 @@ watch(canViewAnalytics, (ok) => {
 
 <template>
   <section class="space-y-6">
-    <div class="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <div class="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <UiMetricCard
         v-for="stat in quickStats"
         :key="stat.title"
