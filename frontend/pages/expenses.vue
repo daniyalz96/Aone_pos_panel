@@ -326,7 +326,7 @@ onMounted(() => {
 
     <UCard>
       <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Recent entries</h2>
-      <div class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div class="table-scroll table-scroll-bordered">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>

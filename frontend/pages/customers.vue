@@ -144,7 +144,7 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="overflow-auto">
+      <div class="table-scroll">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>

@@ -1393,7 +1393,7 @@ onMounted(async () => {
       <p v-if="importPreviewMeta" class="mb-2 text-xs text-slate-500">
         {{ importPreviewMeta.fileName }} — {{ importPreviewMeta.rowCount }} row(s) parsed · {{ validExcelRowCount }} ready to import
       </p>
-      <div v-if="importPreviewRows.length" class="table-scroll rounded-lg border border-slate-200 dark:border-slate-700">
+      <div v-if="importPreviewRows.length" class="table-scroll table-scroll-bordered">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>

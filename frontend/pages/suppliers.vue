@@ -564,7 +564,7 @@ onMounted(async () => {
         <UButton icon="i-lucide-refresh-cw" variant="soft" size="sm" @click="refreshSuppliersPage">Refresh</UButton>
       </div>
 
-      <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div class="table-scroll table-scroll-bordered">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-50 text-xs font-semibold uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>
@@ -753,7 +753,7 @@ onMounted(async () => {
               </div>
 
               <h3 class="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">Ledger</h3>
-              <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+              <div class="table-scroll table-scroll-bordered">
                 <table class="min-w-full text-left text-sm">
                   <thead class="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
                     <tr>

@@ -493,7 +493,7 @@ onMounted(async () => {
         </UiDetailField>
       </div>
 
-      <div class="mt-6 overflow-x-auto">
+      <div class="table-scroll mt-6">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b text-xs uppercase text-slate-500 dark:text-slate-400">
             <tr>

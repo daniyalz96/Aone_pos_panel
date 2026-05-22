@@ -981,7 +981,7 @@ function closeLastReceiptPanel() {
           </tbody>
         </table>
 
-        <div class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+        <div class="table-scroll table-scroll-bordered table-scroll-sm">
           <table class="min-w-full text-left text-xs">
             <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
               <tr>

@@ -631,7 +631,7 @@ onMounted(async () => {
 
     <UCard>
       <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Sale invoices</h2>
-      <div class="overflow-x-auto">
+      <div class="table-scroll">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
             <tr>
@@ -744,7 +744,7 @@ onMounted(async () => {
           </UButton>
         </div>
       </div>
-      <div class="overflow-auto">
+      <div class="table-scroll">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>

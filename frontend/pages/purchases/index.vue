@@ -242,7 +242,7 @@ onMounted(load)
         <div v-if="!catalogProducts.length" class="rounded border border-dashed border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-600">
           No linked products for this supplier. Open Suppliers and assign products or categories to the catalog.
         </div>
-        <div v-else class="max-h-56 overflow-y-auto rounded border border-slate-200 dark:border-slate-700">
+        <div v-else class="table-scroll table-scroll-compact table-scroll-bordered">
           <table class="min-w-full text-left text-xs">
             <thead class="sticky top-0 bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
               <tr>
@@ -268,8 +268,9 @@ onMounted(load)
         </div>
       </div>
 
-      <div v-if="prefabLines.length" class="mt-6 overflow-x-auto">
+      <div v-if="prefabLines.length" class="mt-6">
         <h3 class="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">Lines on this draft</h3>
+        <div class="table-scroll table-scroll-sm">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b text-xs uppercase text-slate-500 dark:text-slate-400">
             <tr>
@@ -305,6 +306,7 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <UButton class="mt-4" icon="i-lucide-file-plus" @click="createDraft">Create draft</UButton>
@@ -329,7 +331,7 @@ onMounted(load)
           />
         </UiLabeledField>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-scroll">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b border-slate-200 text-xs uppercase text-slate-500 dark:border-slate-700 dark:text-slate-400">
             <tr>

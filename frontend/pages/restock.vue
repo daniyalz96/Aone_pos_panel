@@ -15,6 +15,12 @@ const lowStock = ref<Balance[]>([])
 const products = ref<Array<{ id: string; name: string; sku: string }>>([])
 const errorMessage = ref('')
 
+function formatQtyWhole(value: string | number | null | undefined): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return Math.round(n).toLocaleString()
+}
+
 const stockInForm = reactive({
   productId: '',
   qty: 0,
@@ -84,7 +90,7 @@ onMounted(async () => {
           <div v-for="item in lowStock" :key="item.product_id" class="grid gap-2 rounded-lg bg-amber-50 p-3 text-sm sm:grid-cols-3 dark:bg-amber-950/30">
             <UiDetailField label="Product" :value="item.name" />
             <UiDetailField label="SKU" :value="item.sku" />
-            <UiDetailField label="Qty on hand" :value="Number(item.qty_on_hand).toFixed(3)" />
+            <UiDetailField label="Qty on hand" :value="formatQtyWhole(item.qty_on_hand)" />
           </div>
           <p v-if="!lowStock.length" class="text-sm text-slate-500">No low stock items.</p>
         </div>

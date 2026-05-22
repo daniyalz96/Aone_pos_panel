@@ -271,7 +271,7 @@ watch(
         </div>
       </div>
 
-      <div v-if="invoiceDetail?.lines?.length" class="mt-6 overflow-x-auto">
+      <div v-if="invoiceDetail?.lines?.length" class="table-scroll mt-6">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b text-xs uppercase text-slate-500">
             <tr>

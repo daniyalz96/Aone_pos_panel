@@ -397,11 +397,10 @@ function formatMoney(value: string | number | null | undefined): string {
   return formatRs(n)
 }
 
-function formatOpeningBalance(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === '') return '—'
+function formatQtyWhole(value: string | number | null | undefined): string {
   const n = Number(value)
   if (!Number.isFinite(n)) return '—'
-  return n.toFixed(3)
+  return Math.round(n).toLocaleString()
 }
 
 const inventoryTableEmptyMessage = computed(() => {
@@ -699,7 +698,7 @@ onMounted(async () => {
           </UButton>
         </div>
       </div>
-      <div class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-700">
+      <div class="table-scroll table-scroll-bordered">
         <table class="min-w-full text-left text-sm">
           <thead class="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             <tr>
@@ -709,7 +708,6 @@ onMounted(async () => {
               <th class="px-3 py-2">Item name</th>
               <th class="px-3 py-2">Item code</th>
               <th class="px-3 py-2">Category</th>
-              <th class="px-3 py-2 text-right">Opening balance</th>
               <th class="px-3 py-2 text-right">Qty on hand</th>
               <th class="px-3 py-2 text-right">Cost price</th>
               <th class="px-3 py-2 text-right">Sale price</th>
@@ -719,7 +717,7 @@ onMounted(async () => {
           <tbody>
             <template v-if="tableLoading">
               <tr>
-                <td class="px-3 py-6 text-slate-500" :colspan="canManageInventory ? 9 : 7">Loading…</td>
+                <td class="px-3 py-6 text-slate-500" :colspan="canManageInventory ? 8 : 6">Loading…</td>
               </tr>
             </template>
             <template v-else>
@@ -743,10 +741,7 @@ onMounted(async () => {
                 <td class="px-3 py-2 font-medium text-slate-900 dark:text-slate-100">{{ row.name }}</td>
                 <td class="px-3 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{{ itemCode(row) }}</td>
                 <td class="px-3 py-2 text-slate-700 dark:text-slate-300">{{ row.category_name || '—' }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-slate-700 dark:text-slate-300">
-                  {{ formatOpeningBalance(row.opening_balance) }}
-                </td>
-                <td class="px-3 py-2 text-right tabular-nums">{{ Number(row.qty_on_hand).toFixed(3) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums">{{ formatQtyWhole(row.qty_on_hand) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatMoney(row.cost_price) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums">{{ formatMoney(row.sale_price) }}</td>
                 <td v-if="canManageInventory" class="px-3 py-2 text-right" @click.stop>
@@ -774,7 +769,7 @@ onMounted(async () => {
                 </td>
               </tr>
               <tr v-if="inventoryTableEmptyMessage">
-                <td class="px-3 py-6 text-slate-500" :colspan="canManageInventory ? 9 : 7">
+                <td class="px-3 py-6 text-slate-500" :colspan="canManageInventory ? 8 : 6">
                   {{ inventoryTableEmptyMessage }}
                 </td>
               </tr>
@@ -857,14 +852,16 @@ onMounted(async () => {
     <div class="grid gap-4 lg:grid-cols-2">
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Low Stock Alerts</h2>
-        <div class="space-y-2">
-          <div v-for="item in lowStock" :key="item.product_id" class="grid gap-2 rounded-lg bg-amber-50 p-3 text-sm sm:grid-cols-3 dark:bg-amber-950/30">
-            <UiDetailField label="Product" :value="item.name" />
-            <UiDetailField label="SKU" :value="item.sku" />
-            <UiDetailField label="Qty on hand" :value="Number(item.qty_on_hand).toFixed(3)" />
+        <div class="table-scroll table-scroll-sm">
+          <div class="space-y-2">
+            <div v-for="item in lowStock" :key="item.product_id" class="grid gap-2 rounded-lg bg-amber-50 p-3 text-sm sm:grid-cols-3 dark:bg-amber-950/30">
+              <UiDetailField label="Product" :value="item.name" />
+              <UiDetailField label="SKU" :value="item.sku" />
+              <UiDetailField label="Qty on hand" :value="formatQtyWhole(item.qty_on_hand)" />
+            </div>
+            <p v-if="!lowStock.length && !lowStockLoading" class="text-sm text-slate-500">No low stock items.</p>
+            <p v-if="lowStockLoading" class="text-sm text-slate-500">Loading…</p>
           </div>
-          <p v-if="!lowStock.length && !lowStockLoading" class="text-sm text-slate-500">No low stock items.</p>
-          <p v-if="lowStockLoading" class="text-sm text-slate-500">Loading…</p>
         </div>
         <div
           v-if="lowStockTotal > 0"
@@ -895,15 +892,17 @@ onMounted(async () => {
 
       <UCard>
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Recent Movements</h2>
-        <div class="space-y-2">
-          <div v-for="move in movements" :key="move.id" class="grid gap-2 rounded-lg bg-slate-100 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4 dark:bg-slate-800">
-            <UiDetailField label="Product" :value="move.product_name" />
-            <UiDetailField label="Type" :value="move.movement_type" />
-            <UiDetailField label="Qty" :value="Number(move.qty).toFixed(3)" />
-            <UiDetailField label="When" :value="formatDateTime(move.created_at)" />
+        <div class="table-scroll table-scroll-sm">
+          <div class="space-y-2">
+            <div v-for="move in movements" :key="move.id" class="grid gap-2 rounded-lg bg-slate-100 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4 dark:bg-slate-800">
+              <UiDetailField label="Product" :value="move.product_name" />
+              <UiDetailField label="Type" :value="move.movement_type" />
+              <UiDetailField label="Qty" :value="Number(move.qty).toFixed(3)" />
+              <UiDetailField label="When" :value="formatDateTime(move.created_at)" />
+            </div>
+            <p v-if="!movements.length && !movementLoading" class="text-sm text-slate-500">No movement history yet.</p>
+            <p v-if="movementLoading" class="text-sm text-slate-500">Loading…</p>
           </div>
-          <p v-if="!movements.length && !movementLoading" class="text-sm text-slate-500">No movement history yet.</p>
-          <p v-if="movementLoading" class="text-sm text-slate-500">Loading…</p>
         </div>
         <div
           v-if="movementTotal > 0"

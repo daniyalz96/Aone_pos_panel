@@ -255,7 +255,7 @@ onMounted(async () => {
         <UButton icon="i-lucide-refresh-cw" :loading="loadingEntries" @click="loadEntries">Refresh</UButton>
       </div>
 
-      <div class="overflow-x-auto">
+      <div class="table-scroll">
         <table class="mt-4 min-w-full text-left text-sm">
           <thead class="border-b border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400">
             <tr>
@@ -314,7 +314,7 @@ onMounted(async () => {
         <UBadge v-else color="error" variant="soft">Debit/credit mismatch — investigate data</UBadge>
       </div>
 
-      <div class="overflow-x-auto">
+      <div class="table-scroll">
         <table class="min-w-full text-left text-sm">
           <thead class="border-b border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400">
             <tr>
@@ -377,7 +377,7 @@ onMounted(async () => {
 
           <div v-if="detailLoading" class="py-12 text-center text-slate-500">Loading lines…</div>
 
-          <div v-else class="mt-4 overflow-x-auto">
+          <div v-else class="table-scroll mt-4">
             <table class="min-w-full text-left text-sm">
               <thead class="border-b border-slate-200 dark:border-slate-700">
                 <tr class="text-slate-600 dark:text-slate-400">
