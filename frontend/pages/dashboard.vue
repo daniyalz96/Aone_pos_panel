@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
+import { useTodayOverview } from '~/composables/useTodayOverview'
 
 type SalesTrendRow = {
   period: string
@@ -24,7 +25,7 @@ type ProfitMarginRow = {
 }
 
 type WeekSalesProfitPoint = { label: string; sales: number; profit: number; expenses: number }
-type MonthlyProfitPoint = { label: string; profit: number; expenses: number }
+type MonthlyProfitPoint = { label: string; sales: number; profit: number; expenses: number }
 type TopProfitProductPoint = { productName: string; profit: number }
 
 type WeeklyExpenseRow = { period: string; expenses: number }
@@ -35,16 +36,55 @@ type DashboardSummary = {
   today_invoice_count: number
   yesterday_sales: number | string
   yesterday_invoice_count: number
+  month_sales?: number | string
+  month_invoice_count?: number
+  last_month_sales?: number | string
+  year_sales?: number | string
+  year_invoice_count?: number
+  last_year_sales?: number | string
   today_gross_profit?: number | string
   yesterday_gross_profit?: number | string
+  month_gross_profit?: number | string
+  last_month_gross_profit?: number | string
+  year_gross_profit?: number | string
+  last_year_gross_profit?: number | string
   low_stock_item_count: number
   today_expenses_total?: number | string
   today_expenses_personal?: number | string
   today_expenses_business?: number | string
   today_expenses_charity?: number | string
   yesterday_expenses_total?: number | string
+  month_expenses_total?: number | string
+  last_month_expenses_total?: number | string
+  year_expenses_total?: number | string
+  last_year_expenses_total?: number | string
   today_net_sales_minus_expenses?: number | string
 }
+
+type KpiMetricId =
+  | 'today_sales'
+  | 'month_sales'
+  | 'year_sales'
+  | 'today_profit'
+  | 'month_profit'
+  | 'year_profit'
+  | 'today_expenses'
+  | 'month_expenses'
+  | 'year_expenses'
+  | 'low_stock'
+
+type KpiKind = 'sales' | 'profit' | 'expenses' | 'low_stock'
+type KpiPeriod = 'today' | 'month' | 'year'
+
+const KPI_PERIOD_STORAGE_KEY = 'aone-dashboard-kpi-period'
+const KPI_LEGACY_STORAGE_KEY = 'aone-dashboard-kpi-slots'
+const FIXED_KPI_KINDS: KpiKind[] = ['sales', 'profit', 'expenses', 'low_stock']
+
+const kpiPeriodChips: Array<{ label: string; value: KpiPeriod }> = [
+  { label: 'Today', value: 'today' },
+  { label: 'Monthly', value: 'month' },
+  { label: 'Yearly', value: 'year' }
+]
 
 type StatCard = {
   title: string
@@ -57,90 +97,240 @@ type StatCard = {
 
 const { request } = useApi()
 const { user, hydrateFromStorage } = useAuth()
-
-const kpiSummary = ref<DashboardSummary | null>(null)
-const kpiLoading = ref(false)
-const kpiError = ref(false)
+const { kpis: kpiSummary, loading: kpiLoading, error: kpiError, refreshTodayOverview } = useTodayOverview()
 
 function fmtPkr(n: number) {
   return `Rs ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
 
-function pctVsYesterday(today: number, yesterday: number) {
-  if (!Number.isFinite(yesterday) || yesterday <= 0) {
-    if (today > 0) return 'Up from zero yesterday'
-    return 'No sales yesterday'
-  }
-  const pct = ((today - yesterday) / yesterday) * 100
-  const sign = pct >= 0 ? '+' : ''
-  return `${sign}${pct.toFixed(1)}% vs yesterday`
+function isKpiPeriod(v: unknown): v is KpiPeriod {
+  return v === 'today' || v === 'month' || v === 'year'
 }
 
-const quickStats = computed<StatCard[]>(() => {
+function metricIdFor(kind: KpiKind, period: KpiPeriod): KpiMetricId {
+  if (kind === 'low_stock') return 'low_stock'
+  return `${period}_${kind}` as KpiMetricId
+}
+
+function metricIdToConfig(id: KpiMetricId): { kind: KpiKind; period: KpiPeriod } {
+  if (id === 'low_stock') return { kind: 'low_stock', period: 'today' }
+  if (id.startsWith('today_')) return { period: 'today', kind: id.slice(6) as KpiKind }
+  if (id.startsWith('month_')) return { period: 'month', kind: id.slice(6) as KpiKind }
+  if (id.startsWith('year_')) return { period: 'year', kind: id.slice(5) as KpiKind }
+  return { kind: 'sales', period: 'today' }
+}
+
+function loadKpiPeriod(): KpiPeriod {
+  if (!import.meta.client) return 'today'
+  try {
+    const saved = localStorage.getItem(KPI_PERIOD_STORAGE_KEY)
+    if (isKpiPeriod(saved)) return saved
+
+    const legacy = localStorage.getItem(KPI_LEGACY_STORAGE_KEY)
+    if (legacy) {
+      const parsed = JSON.parse(legacy) as unknown
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const first = parsed[0]
+        if (isKpiPeriod(first)) return first
+        if (typeof first === 'object' && first !== null && isKpiPeriod((first as { period?: unknown }).period)) {
+          return (first as { period: KpiPeriod }).period
+        }
+        if (typeof first === 'string' && first.includes('_')) {
+          const period = first.split('_')[0]
+          if (isKpiPeriod(period)) return period
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return 'today'
+}
+
+const kpiPeriod = ref<KpiPeriod>(loadKpiPeriod())
+
+watch(kpiPeriod, (period) => {
+  if (import.meta.client) localStorage.setItem(KPI_PERIOD_STORAGE_KEY, period)
+})
+
+function kpiMetricTitle(metricId: KpiMetricId): string {
+  const kindLabel: Record<KpiKind, string> = {
+    sales: 'Sales',
+    profit: 'Profit',
+    expenses: 'Expenses',
+    low_stock: 'Low stock items'
+  }
+  const periodLabel: Record<KpiPeriod, string> = {
+    today: 'Today',
+    month: 'Monthly',
+    year: 'Yearly'
+  }
+  const config = metricIdToConfig(metricId)
+  if (config.kind === 'low_stock') return kindLabel.low_stock
+  return `${periodLabel[config.period]} ${kindLabel[config.kind]}`
+}
+
+function pctVsPrior(today: number, prior: number, priorLabel: string) {
+  if (!Number.isFinite(prior) || prior <= 0) {
+    if (today > 0) return `Up from zero ${priorLabel}`
+    return `No data ${priorLabel}`
+  }
+  const pct = ((today - prior) / prior) * 100
+  const sign = pct >= 0 ? '+' : ''
+  return `${sign}${pct.toFixed(1)}% vs ${priorLabel}`
+}
+
+function buildKpiCard(metricId: KpiMetricId): StatCard {
+  const title = kpiMetricTitle(metricId)
   const loading = kpiLoading.value && !kpiSummary.value
+
   if (loading) {
-    return [
-      { title: 'Today Sales', value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: true, to: '/reports' },
-      { title: 'Total Profit', value: '…', delta: 'Loading…', icon: 'i-lucide-trending-up', positive: true, to: '/reports' },
-      { title: 'Low Stock Items', value: '…', delta: 'Loading…', icon: 'i-lucide-box', positive: false, to: '/restock' },
-      { title: "Today's Expenses", value: '…', delta: 'Loading…', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
-    ]
+    return { title, value: '…', delta: 'Loading…', icon: 'i-lucide-loader', positive: true }
   }
 
   if (kpiError.value || !kpiSummary.value) {
-    return [
-      { title: 'Today Sales', value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/reports' },
-      { title: 'Total Profit', value: '—', delta: 'Could not load', icon: 'i-lucide-trending-up', positive: false, to: '/reports' },
-      { title: 'Low Stock Items', value: '—', delta: 'Could not load', icon: 'i-lucide-box', positive: false, to: '/restock' },
-      { title: "Today's Expenses", value: '—', delta: 'Could not load', icon: 'i-lucide-wallet', positive: false, to: '/expenses' }
-    ]
+    return { title, value: '—', delta: 'Could not load', icon: 'i-lucide-alert-circle', positive: false }
   }
 
   const s = kpiSummary.value
-  const todaySales = Number(s.today_sales)
-  const ySales = Number(s.yesterday_sales)
-  const todayProfit = Number(s.today_gross_profit ?? 0)
-  const yProfit = Number(s.yesterday_gross_profit ?? 0)
-  const lowStock = Number(s.low_stock_item_count)
 
-  const salesPctGood = todaySales >= ySales
-  const profitGood = todayProfit >= yProfit
-
-  return [
-    {
-      title: 'Today Sales',
-      value: fmtPkr(todaySales),
-      delta: pctVsYesterday(todaySales, ySales),
-      icon: 'i-lucide-wallet',
-      positive: salesPctGood,
-      to: '/reports'
-    },
-    {
-      title: 'Total Profit',
-      value: fmtPkr(todayProfit),
-      delta: pctVsYesterday(todayProfit, yProfit),
-      icon: 'i-lucide-trending-up',
-      positive: profitGood,
-      to: '/reports'
-    },
-    {
-      title: 'Low Stock Items',
-      value: String(lowStock),
-      delta: lowStock === 0 ? 'No restock alerts' : 'Restock recommended',
-      icon: 'i-lucide-box',
-      positive: lowStock === 0,
-      to: '/restock'
-    },
-    {
-      title: "Today's Expenses",
-      value: fmtPkr(Number(s.today_expenses_total ?? 0)),
-      delta: `Net ${fmtPkr(Number(s.today_net_sales_minus_expenses ?? todaySales - Number(s.today_expenses_total ?? 0)))}`,
-      icon: 'i-lucide-wallet',
-      positive: Number(s.today_expenses_total ?? 0) <= todaySales,
-      to: '/expenses'
+  switch (metricId) {
+    case 'today_sales': {
+      const today = Number(s.today_sales)
+      const prior = Number(s.yesterday_sales)
+      return {
+        title,
+        value: fmtPkr(today),
+        delta: pctVsPrior(today, prior, 'yesterday'),
+        icon: 'i-lucide-wallet',
+        positive: today >= prior,
+        to: '/reports'
+      }
     }
-  ]
-})
+    case 'month_sales': {
+      const cur = Number(s.month_sales ?? 0)
+      const prior = Number(s.last_month_sales ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last month'),
+        icon: 'i-lucide-calendar-range',
+        positive: cur >= prior,
+        to: '/reports'
+      }
+    }
+    case 'year_sales': {
+      const cur = Number(s.year_sales ?? 0)
+      const prior = Number(s.last_year_sales ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last year'),
+        icon: 'i-lucide-calendar-days',
+        positive: cur >= prior,
+        to: '/reports'
+      }
+    }
+    case 'today_profit': {
+      const today = Number(s.today_gross_profit ?? 0)
+      const prior = Number(s.yesterday_gross_profit ?? 0)
+      return {
+        title,
+        value: fmtPkr(today),
+        delta: pctVsPrior(today, prior, 'yesterday'),
+        icon: 'i-lucide-trending-up',
+        positive: today >= prior,
+        to: '/reports'
+      }
+    }
+    case 'month_profit': {
+      const cur = Number(s.month_gross_profit ?? 0)
+      const prior = Number(s.last_month_gross_profit ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last month'),
+        icon: 'i-lucide-line-chart',
+        positive: cur >= prior,
+        to: '/reports'
+      }
+    }
+    case 'year_profit': {
+      const cur = Number(s.year_gross_profit ?? 0)
+      const prior = Number(s.last_year_gross_profit ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last year'),
+        icon: 'i-lucide-chart-no-axes-combined',
+        positive: cur >= prior,
+        to: '/reports'
+      }
+    }
+    case 'today_expenses': {
+      const today = Number(s.today_expenses_total ?? 0)
+      const prior = Number(s.yesterday_expenses_total ?? 0)
+      const sales = Number(s.today_sales)
+      return {
+        title,
+        value: fmtPkr(today),
+        delta: `Net ${fmtPkr(Number(s.today_net_sales_minus_expenses ?? sales - today))}`,
+        icon: 'i-lucide-receipt',
+        positive: today <= prior,
+        to: '/expenses'
+      }
+    }
+    case 'month_expenses': {
+      const cur = Number(s.month_expenses_total ?? 0)
+      const prior = Number(s.last_month_expenses_total ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last month'),
+        icon: 'i-lucide-receipt',
+        positive: cur <= prior,
+        to: '/expenses'
+      }
+    }
+    case 'year_expenses': {
+      const cur = Number(s.year_expenses_total ?? 0)
+      const prior = Number(s.last_year_expenses_total ?? 0)
+      return {
+        title,
+        value: fmtPkr(cur),
+        delta: pctVsPrior(cur, prior, 'last year'),
+        icon: 'i-lucide-receipt',
+        positive: cur <= prior,
+        to: '/expenses'
+      }
+    }
+    case 'low_stock': {
+      const lowStock = Number(s.low_stock_item_count)
+      return {
+        title,
+        value: String(lowStock),
+        delta: lowStock === 0 ? 'No restock alerts' : 'Restock recommended',
+        icon: 'i-lucide-box',
+        positive: lowStock === 0,
+        to: '/inventory'
+      }
+    }
+    default:
+      return { title, value: '—', delta: '', icon: 'i-lucide-minus', positive: false }
+  }
+}
+
+type KpiCardView = StatCard & { metricId: KpiMetricId }
+
+const kpiCards = computed<KpiCardView[]>(() =>
+  FIXED_KPI_KINDS.map((kind) => {
+    const metricId = metricIdFor(kind, kpiPeriod.value)
+    return {
+      metricId,
+      ...buildKpiCard(metricId)
+    }
+  })
+)
 
 const expenseTypeCards = computed(() => {
   const s = kpiSummary.value
@@ -181,12 +371,12 @@ const DEMO_TOP_PROFIT_PRODUCTS: TopProfitProductPoint[] = [
 ]
 
 const DEMO_MONTHLY_PROFIT: MonthlyProfitPoint[] = [
-  { label: 'Dec', profit: 42_000, expenses: 18_500 },
-  { label: 'Jan', profit: 51_000, expenses: 21_200 },
-  { label: 'Feb', profit: 47_500, expenses: 19_800 },
-  { label: 'Mar', profit: 58_200, expenses: 22_400 },
-  { label: 'Apr', profit: 62_100, expenses: 24_100 },
-  { label: 'May', profit: 55_400, expenses: 23_600 }
+  { label: 'Dec', sales: 380_000, profit: 42_000, expenses: 18_500 },
+  { label: 'Jan', sales: 442_000, profit: 51_000, expenses: 21_200 },
+  { label: 'Feb', sales: 395_500, profit: 47_500, expenses: 19_800 },
+  { label: 'Mar', sales: 468_200, profit: 58_200, expenses: 22_400 },
+  { label: 'Apr', sales: 512_100, profit: 62_100, expenses: 24_100 },
+  { label: 'May', sales: 489_400, profit: 55_400, expenses: 23_600 }
 ]
 
 /** Demo pie slices: monthly invoice totals (Rs) — shown when analytics unavailable */
@@ -311,6 +501,15 @@ function expenseRowsToMonthMap(rows: MonthlyExpenseRow[]): Map<string, number> {
   return map
 }
 
+function salesTrendToMonthMap(rows: SalesTrendRow[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const r of rows) {
+    const key = String(r.period).trim().slice(0, 7)
+    if (key.length >= 7) map.set(key, Number(r.total_sales) || 0)
+  }
+  return map
+}
+
 async function loadAnalytics() {
   if (!import.meta.client) return
 
@@ -401,13 +600,14 @@ async function loadAnalytics() {
       topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
     }
 
+    const salesByMonth =
+      monthPieRes.status === 'fulfilled' ? salesTrendToMonthMap(monthPieRes.value) : new Map<string, number>()
+    const expenseByMonth =
+      monthExpRes.status === 'fulfilled' ? expenseRowsToMonthMap(monthExpRes.value) : new Map<string, number>()
+
     if (marginRes.status === 'fulfilled') {
       anyLive = true
       const marginRows = marginRes.value
-      const expenseByMonth =
-        monthExpRes.status === 'fulfilled'
-          ? expenseRowsToMonthMap(monthExpRes.value)
-          : new Map<string, number>()
       const months = [...marginRows].sort((a, b) => a.month.localeCompare(b.month))
       const lastSix = months.slice(-6)
       if (lastSix.length > 0) {
@@ -419,6 +619,7 @@ async function loadAnalytics() {
             : m.month
           return {
             label,
+            sales: salesByMonth.get(m.month) ?? 0,
             profit: Number(m.gross_profit),
             expenses: expenseByMonth.get(m.month) ?? 0
           }
@@ -426,6 +627,22 @@ async function loadAnalytics() {
       } else {
         monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
       }
+    } else if (salesByMonth.size > 0) {
+      anyLive = true
+      const keys = [...salesByMonth.keys()].sort().slice(-6)
+      monthlyProfitSeries.value = keys.map((monthKey) => {
+        const parts = monthKey.split('-')
+        const monthNum = parts.length >= 2 ? Number(parts[1]) : Number.NaN
+        const label = Number.isFinite(monthNum)
+          ? new Date(2000, monthNum - 1, 1).toLocaleString(undefined, { month: 'short' })
+          : monthKey
+        return {
+          label,
+          sales: salesByMonth.get(monthKey) ?? 0,
+          profit: 0,
+          expenses: expenseByMonth.get(monthKey) ?? 0
+        }
+      })
     } else {
       monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
     }
@@ -454,16 +671,7 @@ async function loadAnalytics() {
 async function loadDashboardKpis() {
   if (!import.meta.client) return
   hydrateFromStorage()
-  kpiLoading.value = true
-  kpiError.value = false
-  try {
-    kpiSummary.value = await request<DashboardSummary>('/home/kpis')
-  } catch {
-    kpiError.value = true
-    kpiSummary.value = null
-  } finally {
-    kpiLoading.value = false
-  }
+  await refreshTodayOverview()
 }
 
 onMounted(() => {
@@ -478,17 +686,36 @@ watch(canViewAnalytics, (ok) => {
 
 <template>
   <section class="space-y-6">
-    <div class="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <UiMetricCard
-        v-for="stat in quickStats"
-        :key="stat.title"
-        :title="stat.title"
-        :value="stat.value"
-        :delta="stat.delta"
-        :icon="stat.icon"
-        :positive="stat.positive"
-        :to="stat.to"
-      />
+    <div class="space-y-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          v-for="chip in kpiPeriodChips"
+          :key="chip.value"
+          type="button"
+          class="rounded-full px-4 py-1.5 text-sm font-medium transition-colors"
+          :class="
+            kpiPeriod === chip.value
+              ? 'bg-primary text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+          "
+          @click="kpiPeriod = chip.value"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
+
+      <div class="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <UiMetricCard
+          v-for="(card, index) in kpiCards"
+          :key="`${index}-${card.metricId}`"
+          :title="card.title"
+          :value="card.value"
+          :delta="card.delta"
+          :icon="card.icon"
+          :positive="card.positive"
+          :to="card.to"
+        />
+      </div>
     </div>
 
     <div v-if="expenseTypeCards.length" class="grid gap-3 sm:grid-cols-3">
@@ -629,9 +856,9 @@ watch(canViewAnalytics, (ok) => {
     <UCard>
       <div class="mb-4 flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Monthly gross profit</h2>
+          <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Monthly sales &amp; gross profit</h2>
           <p class="text-xs text-slate-500 dark:text-slate-400">
-            Gross profit vs recorded expenses · recent months
+            Total sales, gross profit, and expenses · recent months
           </p>
         </div>
         <div class="flex items-center gap-2">

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
+import { useTodayOverview } from '~/composables/useTodayOverview'
 
 type SaleInvoiceListRow = {
   id: string
@@ -43,6 +44,7 @@ const route = useRoute()
 const router = useRouter()
 const { request } = useApi()
 const { user } = useAuth()
+const { refreshTodayOverview } = useTodayOverview()
 
 const canReturn = computed(() => {
   const u = user.value
@@ -181,6 +183,7 @@ const submitReturn = async () => {
     reason.value = ''
     await loadInvoices()
     await loadDetail(selectedInvoiceId.value)
+    await refreshTodayOverview()
   } catch (e: unknown) {
     errorMessage.value = e instanceof ApiError ? e.message : 'Return failed'
   } finally {

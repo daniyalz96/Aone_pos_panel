@@ -4,6 +4,7 @@ import { compactRsAxis, dashboardChartBase } from '~/utils/dashboardHighcharts'
 
 export type MonthlyProfitPoint = {
   label: string
+  sales: number
   profit: number
   expenses: number
 }
@@ -17,9 +18,10 @@ let chart: { destroy: () => void } | null = null
 
 function chartData() {
   const labels = props.points.map((p) => p.label)
+  const sales = props.points.map((p) => Number(p.sales) || 0)
   const profit = props.points.map((p) => Number(p.profit) || 0)
   const expenses = props.points.map((p) => Number(p.expenses) || 0)
-  return { labels, profit, expenses }
+  return { labels, sales, profit, expenses }
 }
 
 async function draw() {
@@ -29,7 +31,7 @@ async function draw() {
   chart?.destroy()
   chart = null
 
-  const { labels, profit, expenses } = chartData()
+  const { labels, sales, profit, expenses } = chartData()
 
   chart = Highcharts.chart(hostRef.value, {
     ...dashboardChartBase,
@@ -79,6 +81,12 @@ async function draw() {
       }
     },
     series: [
+      {
+        type: 'column',
+        name: 'Total sales',
+        data: sales,
+        color: '#10b981'
+      },
       {
         type: 'column',
         name: 'Gross profit',

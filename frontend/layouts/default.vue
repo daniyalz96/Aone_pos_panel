@@ -1,34 +1,45 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from '#imports'
-import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
+import { useTodayOverview } from '~/composables/useTodayOverview'
 
 const route = useRoute()
-const { request } = useApi()
 const { user, clearAuth } = useAuth()
-const unreadAlerts = ref(0)
+const { refreshTodayOverview } = useTodayOverview()
 const mobileNavOpen = ref(false)
 
-const loadUnreadAlerts = async () => {
-  try {
-    const notifications = await request<Array<{ acknowledged: boolean }>>('/notifications?limit=100')
-    unreadAlerts.value = notifications.filter((item) => !item.acknowledged).length
-  } catch {
-    unreadAlerts.value = 0
+const OVERVIEW_POLL_MS = 20_000
+let overviewPollId: ReturnType<typeof setInterval> | null = null
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    void refreshTodayOverview()
   }
 }
 
 onMounted(() => {
-  loadUnreadAlerts()
+  void refreshTodayOverview()
+  overviewPollId = setInterval(() => void refreshTodayOverview(), OVERVIEW_POLL_MS)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onUnmounted(() => {
+  if (overviewPollId) clearInterval(overviewPollId)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 watch(
   () => route.path,
   () => {
     mobileNavOpen.value = false
+    void refreshTodayOverview()
   }
 )
+
+watch(mobileNavOpen, (open) => {
+  if (open) void refreshTodayOverview()
+})
 </script>
 
 <template>
@@ -67,10 +78,6 @@ watch(
             </div>
             <div class="flex shrink-0 items-center gap-1.5 sm:gap-3">
               <UiThemeToggle />
-              <UButton color="neutral" variant="soft" icon="i-lucide-bell" aria-label="Alerts">
-                <span class="hidden sm:inline">Alerts</span>
-                <UBadge class="ml-0 sm:ml-2" color="error" variant="soft">{{ unreadAlerts }}</UBadge>
-              </UButton>
               <UButton
                 color="neutral"
                 variant="outline"

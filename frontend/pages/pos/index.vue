@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useApi } from '~/composables/useApi'
+import { useTodayOverview } from '~/composables/useTodayOverview'
 
 type Product = {
   id: string
@@ -86,6 +87,7 @@ type ReceiptPayload = {
 }
 
 const { request } = useApi()
+const { refreshTodayOverview } = useTodayOverview()
 const DEFAULT_PRODUCT_IMAGE =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' fill='%23e2e8f0'/%3E%3Cpath d='M30 38h60v44H30z' fill='%2394a3b8'/%3E%3Ccircle cx='50' cy='56' r='7' fill='%23e2e8f0'/%3E%3Cpath d='M38 78l14-12 8 7 11-10 11 15z' fill='%23cbd5e1'/%3E%3C/svg%3E"
 
@@ -428,6 +430,7 @@ const postInvoice = async () => {
     paymentForm.amount = Number(invoice.total_amount)
     paymentForm.tenderedAmount = Number(invoice.total_amount)
     orderStatus.value = 'posted'
+    void refreshTodayOverview()
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Failed to post invoice'
   } finally {
@@ -470,6 +473,7 @@ const collectPayment = async () => {
       }
     })
     receiptPayload.value = await request<ReceiptPayload>(`/receipts/${paidInvoiceId}`)
+    await refreshTodayOverview()
     resetForNewBill()
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Payment failed'
