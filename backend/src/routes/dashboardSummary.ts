@@ -1,6 +1,11 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import {
+  SQL_INVOICE_GROSS_PROFIT_SUBQUERY,
+  SQL_INVOICE_RETURNED_PROFIT_SUBQUERY,
+  SQL_NET_GROSS_PROFIT_SUM,
+} from "../services/salesMetricsSql.js";
 
 function toDateOnly(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -82,16 +87,10 @@ export async function handleDashboardSummary(req: Request, res: Response) {
   `;
 
   const grossProfitSql = `
-    SELECT COALESCE(SUM(ip.gross_profit), 0)::numeric(14,2) AS gross_profit
+    SELECT ${SQL_NET_GROSS_PROFIT_SUM} AS gross_profit
     FROM invoices i
-    LEFT JOIN (
-      SELECT
-        ii.invoice_id,
-        COALESCE(SUM(ii.pre_tax_amount - ii.qty * p.cost_price), 0)::numeric(14,2) AS gross_profit
-      FROM invoice_items ii
-      JOIN products p ON p.id = ii.product_id
-      GROUP BY ii.invoice_id
-    ) ip ON ip.invoice_id = i.id
+    LEFT JOIN (${SQL_INVOICE_GROSS_PROFIT_SUBQUERY}) ip ON ip.invoice_id = i.id
+    LEFT JOIN (${SQL_INVOICE_RETURNED_PROFIT_SUBQUERY}) rp ON rp.invoice_id = i.id
     WHERE i.created_at BETWEEN $1 AND $2
       AND i.invoice_status <> 'voided'
       AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)

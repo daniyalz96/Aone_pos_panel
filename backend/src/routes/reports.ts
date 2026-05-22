@@ -2,6 +2,14 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  SQL_GROSS_SALES_SUM,
+  SQL_INVOICE_GROSS_PROFIT_SUBQUERY,
+  SQL_INVOICE_RETURNED_PROFIT_SUBQUERY,
+  SQL_NET_GROSS_PROFIT_SUM,
+  SQL_NET_SALES_SUM,
+  SQL_RETURN_TOTAL_SUM,
+} from "../services/salesMetricsSql.js";
 
 const router = Router();
 
@@ -36,7 +44,9 @@ router.get("/sales-summary", requireAuth, requireRole("admin", "manager"), async
     `
       SELECT
         COUNT(*)::int AS invoices,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
+        ${SQL_NET_SALES_SUM} AS total_sales,
+        ${SQL_GROSS_SALES_SUM} AS gross_sales,
+        ${SQL_RETURN_TOTAL_SUM} AS total_returns,
         COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS tax_total
       FROM invoices i
       WHERE i.created_at BETWEEN $1 AND $2
@@ -49,19 +59,14 @@ router.get("/sales-summary", requireAuth, requireRole("admin", "manager"), async
 
   const profit = await pool.query(
     `
-      SELECT COALESCE(SUM(profit), 0)::numeric(14,2) AS total_profit
-      FROM (
-        SELECT
-          SUM(ii.pre_tax_amount - ii.qty * p.cost_price) AS profit
-        FROM invoices i
-        JOIN invoice_items ii ON ii.invoice_id = i.id
-        JOIN products p ON p.id = ii.product_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY i.id
-      ) inv_profit
+      SELECT ${SQL_NET_GROSS_PROFIT_SUM} AS total_profit
+      FROM invoices i
+      LEFT JOIN (${SQL_INVOICE_GROSS_PROFIT_SUBQUERY}) ip ON ip.invoice_id = i.id
+      LEFT JOIN (${SQL_INVOICE_RETURNED_PROFIT_SUBQUERY}) rp ON rp.invoice_id = i.id
+      WHERE i.created_at BETWEEN $1 AND $2
+        AND i.invoice_status <> 'voided'
+        AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+        AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
     `,
     [filters.from.toISOString(), filters.to.toISOString(), filters.branchId ?? null, filters.cashierId ?? null],
   );
@@ -100,7 +105,9 @@ router.get("/sale-invoices", requireAuth, requireRole("admin", "manager"), async
     `
       SELECT
         COUNT(*)::int AS invoice_count,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
+        ${SQL_NET_SALES_SUM} AS total_sales,
+        ${SQL_GROSS_SALES_SUM} AS gross_sales,
+        ${SQL_RETURN_TOTAL_SUM} AS total_returns,
         COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS total_tax
       FROM invoices i
       JOIN orders o ON o.id = i.order_id
@@ -116,22 +123,17 @@ router.get("/sale-invoices", requireAuth, requireRole("admin", "manager"), async
 
   const profitRow = await pool.query(
     `
-      SELECT COALESCE(SUM(profit), 0)::numeric(14,2) AS total_profit
-      FROM (
-        SELECT
-          SUM(ii.pre_tax_amount - ii.qty * p.cost_price) AS profit
-        FROM invoices i
-        JOIN orders o ON o.id = i.order_id
-        JOIN invoice_items ii ON ii.invoice_id = i.id
-        JOIN products p ON p.id = ii.product_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-          AND ($5::text IS NULL OR i.payment_status = $5::text)
-          AND ($6::text IS NULL OR i.invoice_number ILIKE $6 OR o.customer_name ILIKE $6)
-        GROUP BY i.id
-      ) inv_profit
+      SELECT ${SQL_NET_GROSS_PROFIT_SUM} AS total_profit
+      FROM invoices i
+      JOIN orders o ON o.id = i.order_id
+      LEFT JOIN (${SQL_INVOICE_GROSS_PROFIT_SUBQUERY}) ip ON ip.invoice_id = i.id
+      LEFT JOIN (${SQL_INVOICE_RETURNED_PROFIT_SUBQUERY}) rp ON rp.invoice_id = i.id
+      WHERE i.created_at BETWEEN $1 AND $2
+        AND i.invoice_status <> 'voided'
+        AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+        AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        AND ($5::text IS NULL OR i.payment_status = $5::text)
+        AND ($6::text IS NULL OR i.invoice_number ILIKE $6 OR o.customer_name ILIKE $6)
     `,
     rangeParams,
   );
@@ -262,7 +264,8 @@ router.get("/cashier-sales", requireAuth, requireRole("admin", "manager"), async
         u.id AS cashier_id,
         u.full_name AS cashier_name,
         COUNT(i.id)::int AS invoice_count,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
+        ${SQL_NET_SALES_SUM} AS total_sales,
+        ${SQL_RETURN_TOTAL_SUM} AS total_returns,
         COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS total_tax
       FROM invoices i
       LEFT JOIN users u ON u.id = i.posted_by
@@ -300,6 +303,216 @@ router.get("/payment-methods", requireAuth, requireRole("admin", "manager"), asy
     [filters.from.toISOString(), filters.to.toISOString(), filters.branchId ?? null],
   );
   return res.json(rows.rows);
+});
+
+const profitLossGroupSchema = reportFilterSchema.extend({
+  groupBy: z.enum(["category", "department", "day", "month", "item"]),
+});
+
+function marginPercent(revenue: number, profit: number) {
+  if (!revenue) return 0;
+  return Math.round((profit / revenue) * 10000) / 100;
+}
+
+router.get("/profit-loss-summary", requireAuth, requireRole("admin", "manager"), async (req, res) => {
+  const parsed = profitLossGroupSchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid query params", errors: parsed.error.flatten() });
+  }
+
+  const from = parsed.data.from ? new Date(parsed.data.from) : new Date(new Date().setMonth(new Date().getMonth() - 1));
+  const to = parsed.data.to ? new Date(parsed.data.to) : new Date();
+  const branchId = parsed.data.branchId ?? null;
+  const cashierId = parsed.data.cashierId ?? null;
+  const groupBy = parsed.data.groupBy;
+  const params = [from.toISOString(), to.toISOString(), branchId, cashierId];
+
+  let rows;
+  if (groupBy === "category") {
+    rows = await pool.query(
+      `
+        SELECT
+          COALESCE(c.id::text, '__none__') AS group_key,
+          COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS group_label,
+          COUNT(DISTINCT i.id)::int AS invoice_count,
+          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+          (
+            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+          )::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN invoices i ON i.id = ii.invoice_id
+        JOIN products p ON p.id = ii.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        WHERE i.created_at BETWEEN $1 AND $2
+          AND i.invoice_status <> 'voided'
+          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        GROUP BY c.id, c.name
+        ORDER BY gross_profit DESC
+      `,
+      params,
+    );
+  } else if (groupBy === "department") {
+    rows = await pool.query(
+      `
+        SELECT
+          COALESCE(d.id::text, '__none__') AS group_key,
+          COALESCE(NULLIF(TRIM(d.name), ''), 'No department') AS group_label,
+          COUNT(DISTINCT i.id)::int AS invoice_count,
+          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+          (
+            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+          )::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN invoices i ON i.id = ii.invoice_id
+        JOIN products p ON p.id = ii.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN departments d ON d.id = c.department_id
+        WHERE i.created_at BETWEEN $1 AND $2
+          AND i.invoice_status <> 'voided'
+          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        GROUP BY d.id, d.name
+        ORDER BY gross_profit DESC
+      `,
+      params,
+    );
+  } else if (groupBy === "day") {
+    rows = await pool.query(
+      `
+        SELECT
+          to_char(date_trunc('day', i.created_at), 'YYYY-MM-DD') AS group_key,
+          to_char(date_trunc('day', i.created_at), 'YYYY-MM-DD') AS group_label,
+          COUNT(DISTINCT i.id)::int AS invoice_count,
+          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+          (
+            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+          )::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN invoices i ON i.id = ii.invoice_id
+        JOIN products p ON p.id = ii.product_id
+        WHERE i.created_at BETWEEN $1 AND $2
+          AND i.invoice_status <> 'voided'
+          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        GROUP BY date_trunc('day', i.created_at)
+        ORDER BY date_trunc('day', i.created_at) ASC
+      `,
+      params,
+    );
+  } else if (groupBy === "month") {
+    rows = await pool.query(
+      `
+        SELECT
+          to_char(date_trunc('month', i.created_at), 'YYYY-MM') AS group_key,
+          to_char(date_trunc('month', i.created_at), 'YYYY-MM') AS group_label,
+          COUNT(DISTINCT i.id)::int AS invoice_count,
+          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+          (
+            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+          )::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN invoices i ON i.id = ii.invoice_id
+        JOIN products p ON p.id = ii.product_id
+        WHERE i.created_at BETWEEN $1 AND $2
+          AND i.invoice_status <> 'voided'
+          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        GROUP BY date_trunc('month', i.created_at)
+        ORDER BY date_trunc('month', i.created_at) DESC
+      `,
+      params,
+    );
+  } else {
+    rows = await pool.query(
+      `
+        SELECT
+          ii.product_id::text AS group_key,
+          COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(ii.product_name), ''), 'Unknown product') AS group_label,
+          COUNT(DISTINCT i.id)::int AS invoice_count,
+          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+          (
+            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+          )::numeric(14,2) AS gross_profit
+        FROM invoice_items ii
+        JOIN invoices i ON i.id = ii.invoice_id
+        JOIN products p ON p.id = ii.product_id
+        WHERE i.created_at BETWEEN $1 AND $2
+          AND i.invoice_status <> 'voided'
+          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+        GROUP BY ii.product_id, p.name, ii.product_name
+        ORDER BY gross_profit DESC
+        LIMIT 500
+      `,
+      params,
+    );
+  }
+
+  const totalsRow = await pool.query(
+    `
+      SELECT
+        COUNT(DISTINCT i.id)::int AS invoice_count,
+        COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
+        COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
+        COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
+        COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
+        COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
+        (
+          COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
+        )::numeric(14,2) AS gross_profit
+      FROM invoice_items ii
+      JOIN invoices i ON i.id = ii.invoice_id
+      JOIN products p ON p.id = ii.product_id
+      WHERE i.created_at BETWEEN $1 AND $2
+        AND i.invoice_status <> 'voided'
+        AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
+        AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
+    `,
+    params,
+  );
+
+  const t = totalsRow.rows[0];
+  const revenue = Number(t.revenue_ex_tax);
+  const profit = Number(t.gross_profit);
+
+  const mappedRows = rows.rows.map((r) => {
+    const rev = Number(r.revenue_ex_tax);
+    const gp = Number(r.gross_profit);
+    return {
+      ...r,
+      margin_percent: marginPercent(rev, gp),
+    };
+  });
+
+  return res.json({
+    groupBy,
+    rows: mappedRows,
+    totals: {
+      ...t,
+      margin_percent: marginPercent(revenue, profit),
+    },
+  });
 });
 
 router.get("/profit-margin", requireAuth, requireRole("admin", "manager"), async (req, res) => {
@@ -362,7 +575,7 @@ router.get("/day-close", requireAuth, requireRole("admin", "manager"), async (re
 
     const sales = await pool.query(
       `
-        SELECT COALESCE(SUM(i.total_amount), 0) AS total_sales
+        SELECT COALESCE(SUM(i.total_amount - i.return_total), 0) AS total_sales
         FROM invoices i
         JOIN orders o ON o.id = i.order_id
         WHERE o.created_by = $1
@@ -425,21 +638,21 @@ router.get("/analytics/sales-trend", requireAuth, requireRole("admin", "manager"
   const rows = await pool.query(
     `
       WITH invoice_profit AS (
-        SELECT
-          ii.invoice_id,
-          COALESCE(SUM(ii.pre_tax_amount - ii.qty * p.cost_price), 0)::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN products p ON p.id = ii.product_id
-        GROUP BY ii.invoice_id
+        ${SQL_INVOICE_GROSS_PROFIT_SUBQUERY}
+      ),
+      invoice_return_profit AS (
+        ${SQL_INVOICE_RETURNED_PROFIT_SUBQUERY}
       )
       SELECT
         to_char(date_trunc('${dateTrunc}', i.created_at), '${labelFormat}') AS period,
         COUNT(i.id)::int AS invoice_count,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
+        ${SQL_NET_SALES_SUM} AS total_sales,
+        ${SQL_RETURN_TOTAL_SUM} AS total_returns,
         COALESCE(SUM(i.tax_total), 0)::numeric(14,2) AS total_tax,
-        COALESCE(SUM(ip.gross_profit), 0)::numeric(14,2) AS gross_profit
+        ${SQL_NET_GROSS_PROFIT_SUM} AS gross_profit
       FROM invoices i
       LEFT JOIN invoice_profit ip ON ip.invoice_id = i.id
+      LEFT JOIN invoice_return_profit rp ON rp.invoice_id = i.id
       WHERE i.created_at BETWEEN $1 AND $2
         AND i.invoice_status <> 'voided'
         AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
@@ -467,7 +680,7 @@ router.get("/analytics/peak-hours", requireAuth, requireRole("admin", "manager")
         EXTRACT(DOW FROM i.created_at)::int AS day_of_week,
         EXTRACT(HOUR FROM i.created_at)::int AS hour_of_day,
         COUNT(i.id)::int AS invoice_count,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales
+        ${SQL_NET_SALES_SUM} AS total_sales
       FROM invoices i
       WHERE i.created_at BETWEEN $1 AND $2
         AND i.invoice_status <> 'voided'
@@ -561,11 +774,11 @@ router.get("/analytics/kpis", requireAuth, requireRole("admin", "manager"), asyn
     `
       SELECT
         COUNT(i.id)::int AS invoice_count,
-        COALESCE(SUM(i.total_amount), 0)::numeric(14,2) AS total_sales,
-        COALESCE(SUM(i.return_total), 0)::numeric(14,2) AS total_returns,
-        COALESCE(SUM(i.total_amount - i.return_total), 0)::numeric(14,2) AS net_sales,
+        ${SQL_GROSS_SALES_SUM} AS total_sales,
+        ${SQL_RETURN_TOTAL_SUM} AS total_returns,
+        ${SQL_NET_SALES_SUM} AS net_sales,
         CASE WHEN COUNT(i.id) = 0 THEN 0
-          ELSE ROUND(COALESCE(SUM(i.total_amount), 0) / COUNT(i.id), 2)
+          ELSE ROUND(COALESCE(SUM(i.total_amount - i.return_total), 0) / COUNT(i.id), 2)
         END::numeric(14,2) AS avg_ticket_size
       FROM invoices i
       WHERE i.created_at BETWEEN $1 AND $2

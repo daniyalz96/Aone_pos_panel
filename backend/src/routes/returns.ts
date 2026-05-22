@@ -4,6 +4,7 @@ import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { postJournalEntry } from "../services/ledger.js";
 import { createAuditLog } from "../utils/audit.js";
+import { settlementAccountByMethod } from "../utils/settlementAccount.js";
 
 const router = Router();
 
@@ -259,18 +260,45 @@ router.post("/", requireAuth, async (req, res) => {
       [parsed.data.invoiceId, returnTotal],
     );
 
-    const cashLikeMethod = parsed.data.refundMethod === "bank" || parsed.data.refundMethod === "card" ? "1010" : "1000";
+    const paidResult = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) AS paid FROM payments WHERE invoice_id = $1 AND status = 'paid'`,
+      [parsed.data.invoiceId],
+    );
+    const totalPaid = Number(paidResult.rows[0].paid);
+    const priorReturns = Number(invoice.return_total ?? 0);
+    const refundableFromPayments = Math.max(0, totalPaid - priorReturns);
+    const refundToCash = Math.min(returnTotal, refundableFromPayments);
+    const refundToReceivable = Number((returnTotal - refundToCash).toFixed(2));
+    const cashAccount = settlementAccountByMethod(parsed.data.refundMethod);
+
+    const journalLines: Array<{ accountCode: string; debit: number; credit: number; memo: string }> = [
+      { accountCode: "5000", debit: Number(subtotal.toFixed(2)), credit: 0, memo: "Sales return" },
+      { accountCode: "2100", debit: Number(taxTotal.toFixed(2)), credit: 0, memo: "Tax adjustment" },
+    ];
+    if (refundToCash > 0.0001) {
+      journalLines.push({
+        accountCode: cashAccount,
+        debit: 0,
+        credit: refundToCash,
+        memo: "Refund payout",
+      });
+    }
+    if (refundToReceivable > 0.0001) {
+      journalLines.push({
+        accountCode: "1100",
+        debit: 0,
+        credit: refundToReceivable,
+        memo: "Reduce receivable",
+      });
+    }
+
     await postJournalEntry({
       client,
       sourceType: "sales_return",
       sourceId: salesReturn.rows[0].id as string,
       memo: `Sales return ${salesReturn.rows[0].id as string}`,
       createdBy: req.user?.id ?? null,
-      lines: [
-        { accountCode: "5000", debit: Number(subtotal.toFixed(2)), credit: 0, memo: "Sales return" },
-        { accountCode: "2100", debit: Number(taxTotal.toFixed(2)), credit: 0, memo: "Tax adjustment" },
-        { accountCode: cashLikeMethod, debit: 0, credit: returnTotal, memo: "Refund payout" },
-      ],
+      lines: journalLines,
     });
 
     await createAuditLog({

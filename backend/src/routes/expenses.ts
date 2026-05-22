@@ -497,10 +497,13 @@ router.get("/day-close-summary", requireAuth, async (req, res) => {
   const shift = shiftResult.rows[0];
   const sales = await pool.query(
     `
-      SELECT COALESCE(SUM(i.total_amount), 0) AS total_sales
+      SELECT COALESCE(SUM(i.total_amount - i.return_total), 0) AS total_sales
       FROM invoices i
       JOIN orders o ON o.id = i.order_id
-      WHERE o.created_by = $1 AND i.created_at >= $2 AND i.created_at <= COALESCE($3, NOW())
+      WHERE o.created_by = $1
+        AND i.created_at >= $2
+        AND i.created_at <= COALESCE($3, NOW())
+        AND i.invoice_status <> 'voided'
     `,
     [shift.user_id, shift.opened_at, shift.closed_at],
   );
