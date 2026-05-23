@@ -157,11 +157,11 @@ const paymentAmountDue = computed(() => {
   return total.value
 })
 
-/** Keep tendered cash aligned with cart/invoice total when items change. */
-function syncTenderedToPaymentDue() {
-  if (paymentMethod.value !== 'cash') return
-  const due = paymentAmountDue.value
-  tenderedAmount.value = due > 0 ? due : 0
+/** Reset tendered when cart/invoice total changes — cashier enters cash manually. */
+function resetTenderedAmount() {
+  if (paymentMethod.value === 'cash') {
+    tenderedAmount.value = 0
+  }
 }
 
 function onTenderedInput(event: Event) {
@@ -228,7 +228,8 @@ const cashTenderedShort = computed(() => {
 const canCollect = computed(() => {
   if (!invoiceId.value || paymentAmountDue.value <= 0) return false
   if (paymentMethod.value === 'cash') {
-    return Number(tenderedAmount.value) >= paymentAmountDue.value
+    const tendered = Number(tenderedAmount.value) || 0
+    return tendered > 0 && tendered >= paymentAmountDue.value
   }
   return true
 })
@@ -493,10 +494,9 @@ async function restorePosSession() {
     invoiceId.value = saved.invoiceId
     postedInvoiceTotal.value = saved.postedInvoiceTotal
     paymentMethod.value = saved.paymentMethod
-    tenderedAmount.value = saved.tenderedAmount
     selectedCategoryId.value = saved.selectedCategoryId || ALL_CATEGORIES_ID
     await refreshOrder()
-    syncTenderedToPaymentDue()
+    resetTenderedAmount()
   } catch {
     clearPosSession()
     orderId.value = null
@@ -517,16 +517,23 @@ watch(showLastReceipt, (value) => {
   }
 })
 
-watch(paymentMethod, () => syncTenderedToPaymentDue())
+watch(paymentMethod, (method) => {
+  if (method === 'cash') resetTenderedAmount()
+  persistPosSession()
+})
 
 watch(
-  [orderId, orderStatus, invoiceId, postedInvoiceTotal, paymentMethod, selectedCategoryId, cart, total],
+  [cart, total, postedInvoiceTotal],
   () => {
-    syncTenderedToPaymentDue()
+    resetTenderedAmount()
     persistPosSession()
   },
   { deep: true }
 )
+
+watch([orderId, orderStatus, invoiceId, paymentMethod, selectedCategoryId], () => {
+  persistPosSession()
+})
 
 watch(tenderedAmount, () => persistPosSession())
 
@@ -634,7 +641,7 @@ const postInvoice = async () => {
     })
     invoiceId.value = invoice.id
     postedInvoiceTotal.value = Number(invoice.total_amount)
-    tenderedAmount.value = Number(invoice.total_amount)
+    tenderedAmount.value = 0
     orderStatus.value = 'posted'
     void refreshTodayOverview()
   } catch (error: unknown) {
@@ -1092,6 +1099,21 @@ function closeLastReceiptPanel() {
                     class="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-500/0 transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                     @input="onTenderedInput"
                   />
+                  <p
+                    v-if="invoiceId"
+                    class="mt-1.5 text-xs text-slate-600 dark:text-slate-400"
+                  >
+                    Payable amount:
+                    <span class="font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                      {{ formatCurrency(paymentAmountDue) }}
+                    </span>
+                  </p>
+                  <p
+                    v-if="invoiceId && Number(tenderedAmount) > 0 && cashTenderedShort > 0"
+                    class="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                  >
+                    Remaining payable: {{ formatCurrency(cashTenderedShort) }}
+                  </p>
                 </UiLabeledField>
                 <div
                   v-if="paymentMethod === 'cash' && cashChangeDue > 0"

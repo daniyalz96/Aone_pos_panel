@@ -4,7 +4,7 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireInventoryManagement } from "../middleware/auth.js";
 import { createAuditLog } from "../utils/audit.js";
-import { parseProductExcelBuffer } from "../utils/productExcelImport.js";
+import { applyImportedProductStock, parseProductExcelBuffer } from "../utils/productExcelImport.js";
 
 const excelUpload = multer({
   storage: multer.memoryStorage(),
@@ -29,6 +29,8 @@ const excelApplyRowSchema = z.object({
   salePrice: z.number().positive(),
   costPrice: z.number().nonnegative(),
   taxRate: z.number().min(0).max(100),
+  qtyOnHand: z.number().nonnegative().default(0),
+  openingBalance: z.number().nonnegative().nullable().optional(),
 });
 
 const excelApplyBodySchema = z.object({
@@ -144,14 +146,24 @@ export function registerExcelMetaAndApplyRoutes(app: Application): void {
             [row.name, row.sku, row.barcode, row.salePrice, row.costPrice, row.taxRate, categoryId],
           );
 
+          const productId = inserted.rows[0].id as string;
+
           await createAuditLog({
             client,
             actorUserId: req.user?.id ?? null,
             action: "create_product",
             entity: "products",
-            entityId: inserted.rows[0].id as string,
+            entityId: productId,
             afterData: inserted.rows[0] as Record<string, unknown>,
           });
+
+          await applyImportedProductStock(
+            client,
+            productId,
+            row.qtyOnHand,
+            row.openingBalance ?? null,
+            req.user?.id ?? null,
+          );
 
           created.push(inserted.rows[0] as Record<string, unknown>);
           await client.query("RELEASE SAVEPOINT excel_import_row");

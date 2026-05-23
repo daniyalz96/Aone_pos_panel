@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import * as XLSX from "xlsx";
+import { applyStockMovement } from "../routes/inventory.js";
 
 export type ParsedExcelProductRow = {
   rowNumber: number;
@@ -9,12 +11,23 @@ export type ParsedExcelProductRow = {
   salePrice: number;
   costPrice: number;
   taxRate: number;
+  qtyOnHand: number;
+  /** `null` when the Opening balance column is absent from the sheet */
+  openingBalance: number | null;
   /** Issues that block committing this row */
   issues: string[];
 };
 
 const FIELD_ALIASES: Record<
-  "category" | "name" | "sku" | "barcode" | "salePrice" | "costPrice" | "taxRate",
+  | "category"
+  | "name"
+  | "sku"
+  | "barcode"
+  | "salePrice"
+  | "costPrice"
+  | "taxRate"
+  | "qtyOnHand"
+  | "openingBalance",
   string[]
 > = {
   category: ["category", "category name", "cat", "grp", "group"],
@@ -24,6 +37,29 @@ const FIELD_ALIASES: Record<
   salePrice: ["sale price", "selling price", "price", "sale", "retail", "retail price", "unit price"],
   costPrice: ["cost price", "cost", "purchase price"],
   taxRate: ["tax rate", "tax", "tax %", "vat", "gst"],
+  qtyOnHand: [
+    "qty on hand",
+    "quantity on hand",
+    "on hand",
+    "qty",
+    "quantity",
+    "stock",
+    "stock qty",
+    "available qty",
+    "available quantity",
+    "current stock",
+  ],
+  openingBalance: [
+    "opening balance",
+    "opening qty",
+    "opening quantity",
+    "opening stock",
+    "open balance",
+    "initial stock",
+    "initial qty",
+    "initial quantity",
+    "opening",
+  ],
 };
 
 function normalizeHeader(cell: unknown): string {
@@ -68,6 +104,92 @@ function parseMoney(raw: string): number | undefined {
   if (s === "") return undefined;
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function parseNonNegativeQty(raw: string, label: string, issues: string[]): number | undefined {
+  if (raw.trim() === "") return 0;
+  const n = parseMoney(raw);
+  if (n === undefined) {
+    issues.push(`${label} must be a valid number.`);
+    return undefined;
+  }
+  if (n < 0) {
+    issues.push(`${label} cannot be negative.`);
+    return undefined;
+  }
+  return Number(n.toFixed(3));
+}
+
+function parseOptionalOpeningBalance(
+  col: number | undefined,
+  raw: string,
+  issues: string[],
+): number | null | undefined {
+  if (col === undefined) return null;
+  if (raw.trim() === "") return 0;
+  const n = parseMoney(raw);
+  if (n === undefined) {
+    issues.push("Opening balance must be a valid number.");
+    return undefined;
+  }
+  if (n < 0) {
+    issues.push("Opening balance cannot be negative.");
+    return undefined;
+  }
+  return Number(n.toFixed(3));
+}
+
+/** Apply qty on hand / opening balance after a product row is inserted during Excel import. */
+export async function applyImportedProductStock(
+  client: PoolClient,
+  productId: string,
+  qtyOnHand: number,
+  openingBalance: number | null,
+  userId: string | null,
+): Promise<void> {
+  const qty = Math.max(0, Number(qtyOnHand.toFixed(3)));
+
+  await client.query(
+    `
+      INSERT INTO inventory_balances (product_id, qty_on_hand)
+      VALUES ($1, 0)
+      ON CONFLICT (product_id) DO NOTHING
+    `,
+    [productId],
+  );
+
+  if (qty > 0) {
+    await applyStockMovement({
+      productId,
+      movementType: "adjustment",
+      qty,
+      reason: "Excel product import",
+      userId,
+      dbClient: client,
+    });
+  }
+
+  if (openingBalance !== null) {
+    await client.query(
+      `
+        UPDATE inventory_balances
+        SET opening_balance = $2, updated_at = NOW()
+        WHERE product_id = $1
+      `,
+      [productId, Math.max(0, Number(openingBalance.toFixed(3)))],
+    );
+  } else if (qty > 0) {
+    await client.query(
+      `
+        UPDATE inventory_balances
+        SET opening_balance = qty_on_hand, updated_at = NOW()
+        WHERE product_id = $1
+          AND opening_balance IS NULL
+          AND qty_on_hand > 0
+      `,
+      [productId],
+    );
+  }
 }
 
 function validateSkuBarcode(name: string, sku: string, barcode: string, salePrice: number): string[] {
@@ -121,6 +243,8 @@ export function parseProductExcelBuffer(buffer: Buffer): ParsedExcelProductRow[]
     const saleRaw = cellString(row as unknown[], cols.salePrice);
     const costRaw = cellString(row as unknown[], cols.costPrice);
     const taxRaw = cellString(row as unknown[], cols.taxRate);
+    const qtyRaw = cellString(row as unknown[], cols.qtyOnHand);
+    const openingRaw = cellString(row as unknown[], cols.openingBalance);
 
     const salePrice = parseMoney(saleRaw);
     const costParsed = parseMoney(costRaw);
@@ -143,6 +267,10 @@ export function parseProductExcelBuffer(buffer: Buffer): ParsedExcelProductRow[]
     }
     issues.push(...validateSkuBarcode(displayName, sku, barcode, resolvedSale));
 
+    const qtyParsed =
+      cols.qtyOnHand === undefined ? 0 : parseNonNegativeQty(qtyRaw, "Qty on hand", issues);
+    const openingParsed = parseOptionalOpeningBalance(cols.openingBalance, openingRaw, issues);
+
     out.push({
       rowNumber: excelRowNumber,
       categoryName,
@@ -152,6 +280,8 @@ export function parseProductExcelBuffer(buffer: Buffer): ParsedExcelProductRow[]
       salePrice: Number.isFinite(resolvedSale) ? resolvedSale : 0,
       costPrice,
       taxRate,
+      qtyOnHand: qtyParsed === undefined ? 0 : qtyParsed,
+      openingBalance: openingParsed === undefined ? null : openingParsed,
       issues,
     });
   }

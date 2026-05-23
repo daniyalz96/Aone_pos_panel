@@ -75,6 +75,8 @@ type ExcelImportRow = {
   salePrice: number
   costPrice: number
   taxRate: number
+  qtyOnHand: number
+  openingBalance: number | null
   issues: string[]
 }
 
@@ -430,7 +432,9 @@ const applyExcelImport = async () => {
     barcode: r.barcode,
     salePrice: r.salePrice,
     costPrice: r.costPrice,
-    taxRate: r.taxRate
+    taxRate: r.taxRate,
+    qtyOnHand: r.qtyOnHand,
+    openingBalance: r.openingBalance
   }))
   if (!rows.length) return
 
@@ -1373,7 +1377,13 @@ onMounted(async () => {
         <span class="font-medium text-slate-800 dark:text-slate-200">SKU</span>,
         <span class="font-medium text-slate-800 dark:text-slate-200">Barcode</span>,
         <span class="font-medium text-slate-800 dark:text-slate-200">Sale price</span>,
-        and optionally Cost price / Tax %. Parsed rows appear below; only rows without errors are imported.
+        and optionally
+        <span class="font-medium text-slate-800 dark:text-slate-200">Cost price</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">Tax %</span>,
+        <span class="font-medium text-slate-800 dark:text-slate-200">Qty on hand</span>,
+        and
+        <span class="font-medium text-slate-800 dark:text-slate-200">Opening balance</span>.
+        Parsed rows appear below; only rows without errors are imported. Stock values apply to Inventory and POS after import.
       </p>
       <div class="mb-4 flex flex-wrap items-center gap-2">
         <input
@@ -1409,6 +1419,8 @@ onMounted(async () => {
               <th class="px-3 py-2">Sale</th>
               <th class="px-3 py-2">Cost</th>
               <th class="px-3 py-2">Tax %</th>
+              <th class="px-3 py-2 text-right">Qty on hand</th>
+              <th class="px-3 py-2 text-right">Opening bal.</th>
               <th class="px-3 py-2">Status</th>
             </tr>
           </thead>
@@ -1427,6 +1439,10 @@ onMounted(async () => {
               <td class="px-3 py-2">Rs {{ Number(row.salePrice).toLocaleString() }}</td>
               <td class="px-3 py-2">Rs {{ Number(row.costPrice).toLocaleString() }}</td>
               <td class="px-3 py-2">{{ row.taxRate }}</td>
+              <td class="px-3 py-2 text-right tabular-nums">{{ Number(row.qtyOnHand).toLocaleString() }}</td>
+              <td class="px-3 py-2 text-right tabular-nums">
+                {{ row.openingBalance === null ? '—' : Number(row.openingBalance).toLocaleString() }}
+              </td>
               <td class="px-3 py-2">
                 <UBadge v-if="row.issues.length === 0" color="success" variant="soft">OK</UBadge>
                 <span v-else class="text-xs text-red-700 dark:text-red-300">{{ row.issues.join('; ') }}</span>
