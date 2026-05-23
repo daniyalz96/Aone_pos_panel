@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from '#imports'
 import { useAuth } from '~/composables/useAuth'
 import { useTodayOverview } from '~/composables/useTodayOverview'
@@ -8,6 +8,8 @@ const route = useRoute()
 const { user, clearAuth } = useAuth()
 const { refreshTodayOverview } = useTodayOverview()
 const mobileNavOpen = ref(false)
+
+const isPosRoute = computed(() => route.path === '/pos' || route.path.startsWith('/pos/'))
 
 const OVERVIEW_POLL_MS = 20_000
 let overviewPollId: ReturnType<typeof setInterval> | null = null
@@ -46,11 +48,16 @@ watch(mobileNavOpen, (open) => {
   <div
     class="flex h-svh flex-col overflow-hidden bg-gradient-to-br from-slate-50 via-white to-emerald-50/40 dark:from-slate-950 dark:via-slate-900 dark:to-emerald-950/20"
   >
-    <div class="mx-auto flex min-h-0 w-full max-w-[1800px] flex-1">
+    <div
+      class="mx-auto flex min-h-0 w-full flex-1"
+      :class="isPosRoute ? 'max-w-none' : 'max-w-[1800px]'"
+    >
       <aside
-        class="hidden h-full min-h-0 w-64 shrink-0 overflow-y-auto border-r border-slate-200/70 bg-white/90 p-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80 lg:block"
+        class="group/sidebar relative z-30 hidden h-full min-h-0 w-[4.25rem] shrink-0 overflow-hidden border-r border-slate-200/70 bg-white/90 backdrop-blur transition-[width] duration-200 ease-out hover:w-64 hover:overflow-y-auto dark:border-slate-800 dark:bg-slate-900/80 lg:block"
       >
-        <AppSidebar />
+        <div class="flex h-full w-full min-w-0 flex-col p-3 lg:p-4">
+          <AppSidebar />
+        </div>
       </aside>
 
       <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -92,7 +99,10 @@ watch(mobileNavOpen, (open) => {
           </div>
         </header>
 
-        <main class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-5 lg:px-5 lg:py-6">
+        <main
+          class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
+          :class="isPosRoute ? 'px-2 py-3 sm:px-3 sm:py-4' : 'px-3 py-4 sm:px-4 sm:py-5 lg:px-5 lg:py-6'"
+        >
           <slot />
         </main>
       </div>
@@ -105,7 +115,7 @@ watch(mobileNavOpen, (open) => {
       :ui="{ content: 'w-[min(100vw-2rem,18rem)] max-w-full p-4' }"
     >
       <template #body>
-        <AppSidebar close-on-navigate @navigate="mobileNavOpen = false" />
+        <AppSidebar always-expanded close-on-navigate @navigate="mobileNavOpen = false" />
       </template>
     </USlideover>
   </div>

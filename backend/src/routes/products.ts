@@ -259,6 +259,7 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           p.barcode,
           p.sale_price AS sale_price,
           c.name AS category_name,
+          p.category_id,
           p.image_url,
           p.tax_rate,
           FALSE AS is_variant,
@@ -280,6 +281,7 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           pv.barcode,
           COALESCE(pv.sale_price, p.sale_price) AS sale_price,
           c.name AS category_name,
+          p.category_id,
           p.image_url,
           p.tax_rate,
           TRUE AS is_variant,
@@ -312,6 +314,7 @@ router.get("/search/billing", requireAuth, async (req, res) => {
           p.barcode,
           p.sale_price AS sale_price,
           c.name AS category_name,
+          p.category_id,
           p.image_url,
           p.tax_rate,
           FALSE AS is_variant,
@@ -322,7 +325,7 @@ router.get("/search/billing", requireAuth, async (req, res) => {
         WHERE p.is_active = TRUE
           AND (p.name ILIKE $1 OR p.sku ILIKE $1 OR p.barcode ILIKE $1)
         ORDER BY p.name ASC
-        LIMIT 40
+        LIMIT 200
       `,
       [`%${q}%`],
     );
@@ -535,23 +538,11 @@ router.post("/categories/bulk-delete", requireAuth, requireInventoryManagement, 
           failed.push({ id, message: "Category not found" });
           continue;
         }
-        if (current.rows[0].is_active === false) {
-          failed.push({ id, message: "Category already deleted" });
+        const result = await hardDeleteCategory(client, id, req.user?.id ?? null);
+        if (!result.ok) {
+          failed.push({ id, message: result.message });
           continue;
         }
-        const updated = await client.query(
-          `UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
-          [id],
-        );
-        await createAuditLog({
-          client,
-          actorUserId: req.user?.id ?? null,
-          action: "delete_category",
-          entity: "categories",
-          entityId: id,
-          beforeData: current.rows[0] as Record<string, unknown>,
-          afterData: updated.rows[0] as Record<string, unknown>,
-        });
         deletedCount += 1;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "Delete failed";
@@ -583,25 +574,13 @@ router.delete("/categories/:id", requireAuth, requireInventoryManagement, async 
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Category not found" });
     }
-    if (current.rows[0].is_active === false) {
+    const result = await hardDeleteCategory(client, id, req.user?.id ?? null);
+    if (!result.ok) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ message: "Category already deleted" });
+      return res.status(result.status).json({ message: result.message });
     }
-    const updated = await client.query(
-      `UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
-      [id],
-    );
-    await createAuditLog({
-      client,
-      actorUserId: req.user?.id ?? null,
-      action: "delete_category",
-      entity: "categories",
-      entityId: id,
-      beforeData: current.rows[0] as Record<string, unknown>,
-      afterData: updated.rows[0] as Record<string, unknown>,
-    });
     await client.query("COMMIT");
-    return res.json(updated.rows[0]);
+    return res.json(result.row);
   } catch (error: unknown) {
     await client.query("ROLLBACK");
     const message = error instanceof Error ? error.message : "Delete failed";
@@ -611,7 +590,32 @@ router.delete("/categories/:id", requireAuth, requireInventoryManagement, async 
   }
 });
 
-async function softDeleteProduct(
+async function getProductDeleteBlockReason(
+  client: PoolClient,
+  productId: string,
+): Promise<string | null> {
+  const checks: Array<{ sql: string; label: string }> = [
+    { sql: `SELECT 1 FROM order_items WHERE product_id = $1 LIMIT 1`, label: "sales orders" },
+    { sql: `SELECT 1 FROM invoice_items WHERE product_id = $1 LIMIT 1`, label: "invoices" },
+    {
+      sql: `SELECT 1 FROM purchase_receipt_items WHERE product_id = $1 LIMIT 1`,
+      label: "purchase receipts",
+    },
+    {
+      sql: `SELECT 1 FROM purchase_invoice_lines WHERE product_id = $1 LIMIT 1`,
+      label: "supplier purchase invoices",
+    },
+  ];
+  for (const { sql, label } of checks) {
+    const hit = await client.query(sql, [productId]);
+    if ((hit.rowCount ?? 0) > 0) {
+      return `Cannot delete: product is used on ${label}.`;
+    }
+  }
+  return null;
+}
+
+async function hardDeleteProduct(
   client: PoolClient,
   productId: string,
   actorUserId: string | null,
@@ -620,13 +624,11 @@ async function softDeleteProduct(
   if (current.rowCount === 0) {
     return { ok: false, message: "Product not found", status: 404 };
   }
-  if (current.rows[0].is_active === false) {
-    return { ok: false, message: "Product already deleted", status: 409 };
+  const blockReason = await getProductDeleteBlockReason(client, productId);
+  if (blockReason) {
+    return { ok: false, message: blockReason, status: 409 };
   }
-  const updated = await client.query(
-    `UPDATE products SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *`,
-    [productId],
-  );
+  await client.query(`DELETE FROM products WHERE id = $1`, [productId]);
   await createAuditLog({
     client,
     actorUserId,
@@ -634,9 +636,35 @@ async function softDeleteProduct(
     entity: "products",
     entityId: productId,
     beforeData: current.rows[0] as Record<string, unknown>,
-    afterData: updated.rows[0] as Record<string, unknown>,
+    afterData: null,
   });
-  return { ok: true, row: updated.rows[0] as Record<string, unknown> };
+  return { ok: true, row: current.rows[0] as Record<string, unknown> };
+}
+
+async function hardDeleteCategory(
+  client: PoolClient,
+  categoryId: string,
+  actorUserId: string | null,
+): Promise<{ ok: true; row: Record<string, unknown> } | { ok: false; message: string; status: number }> {
+  const current = await client.query(`SELECT * FROM categories WHERE id = $1`, [categoryId]);
+  if (current.rowCount === 0) {
+    return { ok: false, message: "Category not found", status: 404 };
+  }
+  await client.query(
+    `UPDATE products SET category_id = NULL, updated_at = NOW() WHERE category_id = $1`,
+    [categoryId],
+  );
+  await client.query(`DELETE FROM categories WHERE id = $1`, [categoryId]);
+  await createAuditLog({
+    client,
+    actorUserId,
+    action: "delete_category",
+    entity: "categories",
+    entityId: categoryId,
+    beforeData: current.rows[0] as Record<string, unknown>,
+    afterData: null,
+  });
+  return { ok: true, row: current.rows[0] as Record<string, unknown> };
 }
 
 router.post("/bulk-delete", requireAuth, requireInventoryManagement, async (req, res) => {
@@ -652,7 +680,7 @@ router.post("/bulk-delete", requireAuth, requireInventoryManagement, async (req,
   try {
     await client.query("BEGIN");
     for (const id of parsed.data.ids) {
-      const result = await softDeleteProduct(client, id, req.user?.id ?? null);
+      const result = await hardDeleteProduct(client, id, req.user?.id ?? null);
       if (result.ok) {
         deletedCount += 1;
       } else {
@@ -679,7 +707,7 @@ router.delete("/:id", requireAuth, requireInventoryManagement, async (req, res) 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const result = await softDeleteProduct(client, id, req.user?.id ?? null);
+    const result = await hardDeleteProduct(client, id, req.user?.id ?? null);
     if (!result.ok) {
       await client.query("ROLLBACK");
       return res.status(result.status).json({ message: result.message });

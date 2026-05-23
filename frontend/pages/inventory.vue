@@ -155,12 +155,16 @@ const deleteConfirmTitle = computed(() => {
 })
 
 const deleteConfirmDescription =
-  'The product will be deactivated and hidden from POS. Sales history is kept.'
+  'This permanently removes the product from your catalog. Products used on sales or purchase records cannot be deleted.'
+
+const resetDeleteConfirm = () => {
+  deleteConfirmOpen.value = false
+  deletePending.value = null
+}
 
 const closeDeleteConfirm = () => {
   if (deleteConfirmLoading.value) return
-  deleteConfirmOpen.value = false
-  deletePending.value = null
+  resetDeleteConfirm()
 }
 
 const openDeleteInventoryProductConfirm = (row: Balance) => {
@@ -183,7 +187,7 @@ const performDeleteInventoryProduct = async (row: Balance) => {
     await loadData()
     toast.add({
       title: 'Product deleted',
-      description: `"${row.name}" was deactivated.`,
+      description: `"${row.name}" was permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -214,7 +218,7 @@ const performBulkDeleteInventoryProducts = async () => {
     await loadData()
     toast.add({
       title: 'Products deleted',
-      description: `${res.deletedCount} product(s) deactivated.`,
+      description: `${res.deletedCount} product(s) permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -251,7 +255,7 @@ const confirmDeleteAction = async () => {
     } else {
       await performBulkDeleteInventoryProducts()
     }
-    closeDeleteConfirm()
+    resetDeleteConfirm()
   } catch {
     /* toast + errorMessage already set */
   } finally {

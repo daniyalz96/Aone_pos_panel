@@ -891,12 +891,16 @@ const deleteConfirmTitle = computed(() => {
 })
 
 const deleteConfirmDescription =
-  'The item will be deactivated and hidden from POS. Sales and purchase history are kept.'
+  'This permanently removes the item from your catalog. Products used on sales or purchase records cannot be deleted. Deleting a category unlinks its products (they stay in the list without that category).'
+
+const resetDeleteConfirm = () => {
+  deleteConfirmOpen.value = false
+  deletePending.value = null
+}
 
 const closeDeleteConfirm = () => {
   if (deleteConfirmLoading.value) return
-  deleteConfirmOpen.value = false
-  deletePending.value = null
+  resetDeleteConfirm()
 }
 
 const openDeleteProductConfirm = (product: Product) => {
@@ -964,7 +968,7 @@ const performDeleteProduct = async (product: Product) => {
     await reloadProductsNow()
     toast.add({
       title: 'Product deleted',
-      description: `"${product.name}" was deactivated.`,
+      description: `"${product.name}" was permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -995,7 +999,7 @@ const performBulkDeleteProducts = async () => {
     await reloadProductsNow()
     toast.add({
       title: 'Products deleted',
-      description: `${res.deletedCount} product(s) deactivated.`,
+      description: `${res.deletedCount} product(s) permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -1031,7 +1035,7 @@ const performDeleteCategory = async (cat: Category) => {
     await reloadProductsNow()
     toast.add({
       title: 'Category deleted',
-      description: `"${cat.name}" was deactivated.`,
+      description: `"${cat.name}" was permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -1062,7 +1066,7 @@ const performBulkDeleteCategories = async () => {
     await reloadProductsNow()
     toast.add({
       title: 'Categories deleted',
-      description: `${res.deletedCount} category(ies) deactivated.`,
+      description: `${res.deletedCount} category(ies) permanently removed.`,
       color: 'success',
       icon: 'i-lucide-circle-check'
     })
@@ -1103,7 +1107,7 @@ const confirmDeleteAction = async () => {
     } else if (pending.kind === 'category' && pending.mode === 'bulk') {
       await performBulkDeleteCategories()
     }
-    closeDeleteConfirm()
+    resetDeleteConfirm()
   } catch {
     /* toast + errorMessage already set */
   } finally {

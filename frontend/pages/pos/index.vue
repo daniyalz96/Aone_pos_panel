@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useApi } from '~/composables/useApi'
+import { clearPosSession, readPosSession, writePosSession } from '~/composables/usePosSession'
 import { useTodayOverview } from '~/composables/useTodayOverview'
 
 type Product = {
@@ -9,6 +10,7 @@ type Product = {
   sku: string
   barcode: string | null
   sale_price: number
+  category_id: string | null
   category_name: string | null
   image_url?: string | null
   qty_on_hand?: number | string | null
@@ -19,6 +21,7 @@ type ProductResult = {
   display_name: string
   sku: string
   sale_price: number
+  category_id: string | null
   category: string
   image_url?: string | null
   /** On-hand stock from inventory_balances (same for base product and variants). */
@@ -28,6 +31,16 @@ type ProductResult = {
 type Category = {
   id: string
   name: string
+}
+
+type CategoryOption = {
+  id: string
+  name: string
+}
+
+type ProductsPage = {
+  items: Product[]
+  total: number
 }
 
 type OrderItem = {
@@ -99,10 +112,14 @@ const paymentMethods = [
   { label: 'Bank', value: 'bank' }
 ]
 
+const ALL_CATEGORIES_ID = '__all__'
+
 const search = ref('')
-const selectedCategory = ref('All')
-const categories = ref<string[]>(['All'])
+const selectedCategoryId = ref(ALL_CATEGORIES_ID)
+const categories = ref<CategoryOption[]>([{ id: ALL_CATEGORIES_ID, name: 'All' }])
+const categoryProducts = ref<ProductResult[] | null>(null)
 const productCategoryMap = ref<Record<string, string>>({})
+const productCategoryIdMap = ref<Record<string, string | null>>({})
 const productImageMap = ref<Record<string, string | null>>({})
 const productQtyMap = ref<Record<string, number>>({})
 const baseProducts = ref<ProductResult[]>([])
@@ -112,6 +129,7 @@ const orderId = ref<string | null>(null)
 const orderStatus = ref<'draft' | 'held' | 'posted'>('draft')
 const cart = ref<OrderItem[]>([])
 const invoiceId = ref<string | null>(null)
+const postedInvoiceTotal = ref<number | null>(null)
 const receiptPayload = ref<ReceiptPayload | null>(null)
 
 const isLoadingProducts = ref(false)
@@ -130,23 +148,90 @@ const addItemForm = reactive({
   discountValue: 0
 })
 
-const paymentForm = reactive({
-  method: 'cash',
-  amount: 0,
-  tenderedAmount: 0
+const paymentMethod = ref<'cash' | 'card' | 'qr' | 'wallet' | 'bank'>('cash')
+const tenderedAmount = ref(0)
+
+/** Amount due for collection — always invoice/cart total, not user-editable. */
+const paymentAmountDue = computed(() => {
+  if (postedInvoiceTotal.value != null) return postedInvoiceTotal.value
+  return total.value
 })
 
+function ensureTenderedMeetsMinimum() {
+  const due = paymentAmountDue.value
+  if (paymentMethod.value === 'cash' && Number(tenderedAmount.value) < due) {
+    tenderedAmount.value = due
+  }
+}
+
+function onTenderedInput(event: Event) {
+  const raw = (event.target as HTMLInputElement).value.replace(/,/g, '').trim()
+  if (raw === '') {
+    tenderedAmount.value = 0
+    return
+  }
+  const n = Number(raw)
+  tenderedAmount.value = Number.isFinite(n) ? n : 0
+}
+
+function persistPosSession() {
+  if (!import.meta.client) return
+  if (!orderId.value) {
+    clearPosSession()
+    return
+  }
+  writePosSession({
+    orderId: orderId.value,
+    orderStatus: orderStatus.value,
+    invoiceId: invoiceId.value,
+    postedInvoiceTotal: postedInvoiceTotal.value,
+    paymentMethod: paymentMethod.value,
+    paymentAmount: paymentAmountDue.value,
+    tenderedAmount: tenderedAmount.value,
+    selectedCategoryId: selectedCategoryId.value
+  })
+}
+
 const activeProducts = computed(() => {
-  const source = search.value.trim().length >= 2 ? searchResults.value : baseProducts.value
-  if (selectedCategory.value === 'All') return source
-  return source.filter((product) => product.category === selectedCategory.value)
+  const searching = search.value.trim().length >= 2
+  let source = searching
+    ? searchResults.value
+    : selectedCategoryId.value !== ALL_CATEGORIES_ID && categoryProducts.value
+      ? categoryProducts.value
+      : baseProducts.value
+
+  if (selectedCategoryId.value !== ALL_CATEGORIES_ID) {
+    source = source.filter((product) => product.category_id === selectedCategoryId.value)
+  }
+  return source
 })
 
 const subtotal = computed(() => Number(cart.value.reduce((sum, item) => sum + item.qty * item.unit_price, 0).toFixed(2)))
 const discountTotal = computed(() => Number(cart.value.reduce((sum, item) => sum + Number(item.discount_amount ?? 0), 0).toFixed(2)))
 const total = computed(() => Number(cart.value.reduce((sum, item) => sum + item.line_total, 0).toFixed(2)))
 const tax = computed(() => Number((total.value - (subtotal.value - discountTotal.value)).toFixed(2)))
-const canCollect = computed(() => Boolean(invoiceId.value) && paymentForm.amount > 0)
+
+const cashChangeDue = computed(() => {
+  if (paymentMethod.value !== 'cash') return 0
+  const tendered = Number(tenderedAmount.value) || 0
+  const pay = paymentAmountDue.value
+  return Math.max(0, Number((tendered - pay).toFixed(2)))
+})
+
+const cashTenderedShort = computed(() => {
+  if (paymentMethod.value !== 'cash') return 0
+  const tendered = Number(tenderedAmount.value) || 0
+  const pay = paymentAmountDue.value
+  return Math.max(0, Number((pay - tendered).toFixed(2)))
+})
+
+const canCollect = computed(() => {
+  if (!invoiceId.value || paymentAmountDue.value <= 0) return false
+  if (paymentMethod.value === 'cash') {
+    return Number(tenderedAmount.value) >= paymentAmountDue.value
+  }
+  return true
+})
 const showReceiptPanel = computed(() => showLastReceipt.value && receiptPayload.value !== null)
 
 const formatCurrency = (amount: number) => `Rs ${amount.toLocaleString()}`
@@ -201,11 +286,79 @@ const stockQtyClass = (qty: number) => {
   return 'text-slate-800 dark:text-slate-100'
 }
 
+function mapApiProduct(product: Product): ProductResult {
+  return {
+    product_id: product.id,
+    display_name: product.name,
+    sku: product.sku,
+    sale_price: Number(product.sale_price),
+    category_id: product.category_id ?? null,
+    category: product.category_name ?? 'Uncategorized',
+    image_url: product.image_url ?? null,
+    qty_on_hand: parseStockQty(product.qty_on_hand, product.id)
+  }
+}
+
+function syncProductLookupMaps(products: ProductResult[]) {
+  productCategoryMap.value = products.reduce<Record<string, string>>((acc, product) => {
+    acc[product.product_id] = product.category
+    return acc
+  }, {})
+  productCategoryIdMap.value = products.reduce<Record<string, string | null>>((acc, product) => {
+    acc[product.product_id] = product.category_id
+    return acc
+  }, {})
+  productImageMap.value = products.reduce<Record<string, string | null>>((acc, product) => {
+    acc[product.product_id] = product.image_url ?? null
+    return acc
+  }, {})
+  productQtyMap.value = products.reduce<Record<string, number>>((acc, product) => {
+    acc[product.product_id] = product.qty_on_hand
+    return acc
+  }, {})
+}
+
+async function fetchProductsPage(params: URLSearchParams): Promise<ProductsPage> {
+  const qs = params.toString()
+  const data = await request<ProductsPage | Product[]>(`/products?${qs}`)
+  if (Array.isArray(data)) {
+    return { items: data, total: data.length }
+  }
+  return data
+}
+
+async function fetchAllActiveProducts(filters?: { categoryId?: string }): Promise<Product[]> {
+  const limit = 500
+  let offset = 0
+  const all: Product[] = []
+  let total = 0
+
+  do {
+    const params = new URLSearchParams({
+      isActive: 'true',
+      limit: String(limit),
+      offset: String(offset),
+      withTotal: 'true',
+      sort: 'name_asc'
+    })
+    if (filters?.categoryId) params.set('categoryId', filters.categoryId)
+
+    const page = await fetchProductsPage(params)
+    all.push(...page.items)
+    total = page.total
+    offset += limit
+    if (!page.items.length) break
+  } while (all.length < total)
+
+  return all
+}
+
 const mapProductRow = (row: {
   product_id: string
   display_name: string
   sku: string
   sale_price: number
+  category_id?: string | null
   category_name?: string | null
   image_url?: string | null
   qty_on_hand?: unknown
@@ -214,6 +367,7 @@ const mapProductRow = (row: {
   display_name: row.display_name,
   sku: row.sku,
   sale_price: Number(row.sale_price),
+  category_id: row.category_id ?? productCategoryIdMap.value[row.product_id] ?? null,
   category: row.category_name ?? productCategoryMap.value[row.product_id] ?? 'Uncategorized',
   image_url: row.image_url ?? productImageMap.value[row.product_id] ?? null,
   qty_on_hand: parseStockQty(row.qty_on_hand, row.product_id)
@@ -223,31 +377,25 @@ const loadProducts = async () => {
   isLoadingProducts.value = true
   clearError()
   try {
-    const products = await request<Product[]>('/products')
-    baseProducts.value = products.map((product) => ({
-      product_id: product.id,
-      display_name: product.name,
-      sku: product.sku,
-      sale_price: Number(product.sale_price),
-      category: product.category_name ?? 'Uncategorized',
-      image_url: product.image_url ?? null,
-      qty_on_hand: parseStockQty(product.qty_on_hand, product.id)
-    }))
-
-    productCategoryMap.value = baseProducts.value.reduce<Record<string, string>>((acc, product) => {
-      acc[product.product_id] = product.category
-      return acc
-    }, {})
-    productImageMap.value = baseProducts.value.reduce<Record<string, string | null>>((acc, product) => {
-      acc[product.product_id] = product.image_url ?? null
-      return acc
-    }, {})
-    productQtyMap.value = baseProducts.value.reduce<Record<string, number>>((acc, product) => {
-      acc[product.product_id] = product.qty_on_hand
-      return acc
-    }, {})
+    const products = await fetchAllActiveProducts()
+    baseProducts.value = products.map(mapApiProduct)
+    syncProductLookupMaps(baseProducts.value)
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Failed to load products'
+  } finally {
+    isLoadingProducts.value = false
+  }
+}
+
+const loadCategoryProducts = async (categoryId: string) => {
+  isLoadingProducts.value = true
+  clearError()
+  try {
+    const products = await fetchAllActiveProducts({ categoryId })
+    categoryProducts.value = products.map(mapApiProduct)
+  } catch (error: unknown) {
+    errorMessage.value = (error as { message?: string }).message ?? 'Failed to load category products'
+    categoryProducts.value = []
   } finally {
     isLoadingProducts.value = false
   }
@@ -256,12 +404,28 @@ const loadProducts = async () => {
 const loadCategories = async () => {
   try {
     const rows = await request<Category[]>('/products/categories')
-    categories.value = ['All', ...rows.map((category) => category.name)]
+    categories.value = [{ id: ALL_CATEGORIES_ID, name: 'All' }, ...rows.map((category) => ({ id: category.id, name: category.name }))]
   } catch {
-    const fromProducts = new Set(baseProducts.value.map((product) => product.category))
-    categories.value = ['All', ...fromProducts]
+    const seen = new Map<string, string>()
+    for (const product of baseProducts.value) {
+      if (product.category_id && !seen.has(product.category_id)) {
+        seen.set(product.category_id, product.category)
+      }
+    }
+    categories.value = [
+      { id: ALL_CATEGORIES_ID, name: 'All' },
+      ...[...seen.entries()].map(([id, name]) => ({ id, name }))
+    ]
   }
 }
+
+watch(selectedCategoryId, async (categoryId) => {
+  if (categoryId === ALL_CATEGORIES_ID) {
+    categoryProducts.value = null
+    return
+  }
+  await loadCategoryProducts(categoryId)
+})
 
 const ensureOrder = async () => {
   if (orderId.value) return orderId.value
@@ -299,6 +463,7 @@ watch(search, async (value) => {
       display_name: string
       sku: string
       sale_price: number
+      category_id?: string | null
       category_name?: string | null
       image_url?: string | null
       qty_on_hand?: unknown
@@ -316,6 +481,34 @@ onMounted(async () => {
   }
   await loadProducts()
   await loadCategories()
+  await restorePosSession()
+})
+
+async function restorePosSession() {
+  const saved = readPosSession()
+  if (!saved?.orderId) return
+  try {
+    orderId.value = saved.orderId
+    orderStatus.value = saved.orderStatus
+    invoiceId.value = saved.invoiceId
+    postedInvoiceTotal.value = saved.postedInvoiceTotal
+    paymentMethod.value = saved.paymentMethod
+    tenderedAmount.value = saved.tenderedAmount
+    selectedCategoryId.value = saved.selectedCategoryId || ALL_CATEGORIES_ID
+    await refreshOrder()
+    ensureTenderedMeetsMinimum()
+  } catch {
+    clearPosSession()
+    orderId.value = null
+    orderStatus.value = 'draft'
+    cart.value = []
+    invoiceId.value = null
+    postedInvoiceTotal.value = null
+  }
+}
+
+onBeforeUnmount(() => {
+  persistPosSession()
 })
 
 watch(showLastReceipt, (value) => {
@@ -323,6 +516,19 @@ watch(showLastReceipt, (value) => {
     localStorage.setItem(SHOW_LAST_RECEIPT_KEY, String(value))
   }
 })
+
+watch(paymentMethod, () => ensureTenderedMeetsMinimum())
+
+watch(
+  [orderId, orderStatus, invoiceId, postedInvoiceTotal, paymentMethod, selectedCategoryId, cart, total],
+  () => {
+    ensureTenderedMeetsMinimum()
+    persistPosSession()
+  },
+  { deep: true }
+)
+
+watch(tenderedAmount, () => persistPosSession())
 
 const openAddItemModal = (product: ProductResult) => {
   selectedProduct.value = product
@@ -427,8 +633,8 @@ const postInvoice = async () => {
       body: {}
     })
     invoiceId.value = invoice.id
-    paymentForm.amount = Number(invoice.total_amount)
-    paymentForm.tenderedAmount = Number(invoice.total_amount)
+    postedInvoiceTotal.value = Number(invoice.total_amount)
+    tenderedAmount.value = Number(invoice.total_amount)
     orderStatus.value = 'posted'
     void refreshTodayOverview()
   } catch (error: unknown) {
@@ -443,18 +649,25 @@ const resetForNewBill = () => {
   orderStatus.value = 'draft'
   cart.value = []
   invoiceId.value = null
-  paymentForm.method = 'cash'
-  paymentForm.amount = 0
-  paymentForm.tenderedAmount = 0
+  postedInvoiceTotal.value = null
+  paymentMethod.value = 'cash'
+  tenderedAmount.value = 0
   search.value = ''
   searchResults.value = []
-  selectedCategory.value = 'All'
+  selectedCategoryId.value = ALL_CATEGORIES_ID
+  categoryProducts.value = null
+  clearPosSession()
   clearError()
   void loadProducts()
 }
 
 const collectPayment = async () => {
-  if (!invoiceId.value || isCollectingPayment.value) return
+  if (!invoiceId.value || isCollectingPayment.value || !canCollect.value) return
+  const payAmount = paymentAmountDue.value
+  if (paymentMethod.value === 'cash' && cashTenderedShort.value > 0) {
+    errorMessage.value = `Cash tendered is short by ${formatCurrency(cashTenderedShort.value)}`
+    return
+  }
   const paidInvoiceId = invoiceId.value
   clearError()
   isCollectingPayment.value = true
@@ -463,11 +676,12 @@ const collectPayment = async () => {
       method: 'POST',
       body: {
         invoiceId: paidInvoiceId,
+        markPendingIfUnderpaid: true,
         splits: [
           {
-            method: paymentForm.method,
-            amount: Number(paymentForm.amount),
-            tenderedAmount: paymentForm.method === 'cash' ? Number(paymentForm.tenderedAmount) : undefined
+            method: paymentMethod.value,
+            amount: payAmount,
+            tenderedAmount: paymentMethod.value === 'cash' ? Number(tenderedAmount.value) : undefined
           }
         ]
       }
@@ -675,9 +889,9 @@ function closeLastReceiptPanel() {
 
 <template>
   <div class="pos-billing-root flex flex-col gap-4 max-xl:min-h-0 xl:h-[calc(100dvh-10.5rem)] xl:min-h-[28rem] xl:overflow-hidden">
-    <section class="grid min-h-0 min-w-0 gap-6 max-xl:min-h-0 xl:flex-1 xl:overflow-hidden xl:grid-cols-3">
+    <section class="grid min-h-0 min-w-0 gap-4 max-xl:min-h-0 sm:gap-5 xl:flex-1 xl:gap-6 xl:overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(26rem,30rem)]">
       <UCard
-        class="flex min-h-0 flex-col overflow-hidden xl:col-span-2"
+        class="flex min-h-0 min-w-0 flex-col overflow-hidden"
         :ui="{ body: 'flex min-h-0 flex-1 flex-col' }"
       >
         <div class="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
@@ -714,107 +928,58 @@ function closeLastReceiptPanel() {
           <div class="pos-category-scroll flex flex-nowrap gap-2 overflow-x-auto pb-1">
             <UButton
               v-for="category in categories"
-              :key="category"
+              :key="category.id"
               class="shrink-0 whitespace-nowrap"
               color="neutral"
-              :variant="selectedCategory === category ? 'solid' : 'soft'"
-              :icon="category === 'All' ? 'i-lucide-grid-2x2' : 'i-lucide-tag'"
-              @click="selectedCategory = category"
+              :variant="selectedCategoryId === category.id ? 'solid' : 'soft'"
+              :icon="category.id === ALL_CATEGORIES_ID ? 'i-lucide-grid-2x2' : 'i-lucide-tag'"
+              @click="selectedCategoryId = category.id"
             >
-              {{ category }}
+              {{ category.name }}
             </UButton>
           </div>
         </div>
 
-        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pt-4">
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            <UPopover
+        <div class="pos-products-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pt-4">
+          <div class="grid gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+            <button
               v-for="product in activeProducts"
               :key="product.product_id"
-              class="block w-full min-w-0"
-              mode="hover"
-              arrow
-              :open-delay="200"
-              :close-delay="120"
-              :content="{ side: 'top', align: 'center', sideOffset: 10 }"
+              type="button"
+              class="pos-product-card relative w-full min-w-0 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition duration-200 hover:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-500"
+              :disabled="isWorking"
+              @click="openAddItemModal(product)"
             >
-              <button
-                type="button"
-                class="pos-product-card relative w-full rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition duration-200 hover:border-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-500"
-                :disabled="isWorking"
-                @click="openAddItemModal(product)"
-              >
-                <div class="mb-3">
-                  <img
-                    :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
-                    alt=""
-                    class="h-36 w-full rounded-lg object-cover sm:h-40"
-                  />
-                </div>
-                <UiTruncatedText
-                  :text="product.display_name"
-                  :lines="3"
-                  class="text-left font-medium text-slate-800 dark:text-slate-100"
+              <div class="mb-3">
+                <img
+                  :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
+                  alt=""
+                  class="h-28 w-full rounded-lg object-cover sm:h-32 lg:h-36"
                 />
-                <div class="mt-1 flex items-center justify-between gap-2 text-xs">
-                  <UiTruncatedText
-                    :text="product.sku"
-                    :lines="1"
-                    tag="span"
-                    class="min-w-0 flex-1 text-slate-500"
-                  />
-                  <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-300">
-                    <span class="text-slate-500 dark:text-slate-400">Qty</span>
-                    <span class="ml-1 font-semibold" :class="stockQtyClass(product.qty_on_hand)">
-                      {{ formatStockQty(product.qty_on_hand) }}
-                    </span>
+              </div>
+              <UiTruncatedText
+                :text="product.display_name"
+                :lines="3"
+                class="text-left font-medium text-slate-800 dark:text-slate-100"
+              />
+              <div class="mt-1 flex items-center justify-between gap-2 text-xs">
+                <UiTruncatedText
+                  :text="product.sku"
+                  :lines="1"
+                  tag="span"
+                  class="min-w-0 flex-1 text-slate-500"
+                />
+                <span class="shrink-0 tabular-nums text-slate-600 dark:text-slate-300">
+                  <span class="text-slate-500 dark:text-slate-400">Qty</span>
+                  <span class="ml-1 font-semibold" :class="stockQtyClass(product.qty_on_hand)">
+                    {{ formatStockQty(product.qty_on_hand) }}
                   </span>
-                </div>
-                <p class="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                  {{ formatCurrency(product.sale_price) }}
-                </p>
-              </button>
-
-              <template #content>
-                <div
-                  class="w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
-                >
-                  <img
-                    :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
-                    alt=""
-                    class="h-32 w-full object-cover"
-                  />
-                  <div class="space-y-2 p-3 text-sm">
-                    <p class="font-semibold leading-snug text-slate-900 dark:text-slate-100">
-                      {{ product.display_name }}
-                    </p>
-                    <dl class="space-y-1 text-xs text-slate-600 dark:text-slate-300">
-                      <div class="flex justify-between gap-2">
-                        <dt class="font-medium text-slate-500">SKU</dt>
-                        <dd class="font-mono text-right">{{ product.sku }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2">
-                        <dt class="font-medium text-slate-500">Category</dt>
-                        <dd class="text-right">{{ product.category || '—' }}</dd>
-                      </div>
-                      <div class="flex justify-between gap-2">
-                        <dt class="font-medium text-slate-500">In stock</dt>
-                        <dd class="font-semibold tabular-nums" :class="stockQtyClass(product.qty_on_hand)">
-                          {{ formatStockQty(product.qty_on_hand) }}
-                        </dd>
-                      </div>
-                      <div class="flex justify-between gap-2 border-t border-slate-100 pt-2 dark:border-slate-800">
-                        <dt class="font-medium text-slate-500">Price</dt>
-                        <dd class="text-right font-semibold text-emerald-700 dark:text-emerald-400">
-                          {{ formatCurrency(product.sale_price) }}
-                        </dd>
-                      </div>
-                    </dl>
-                    <p class="text-center text-xs text-slate-400">Click card to add to cart</p>
-                  </div>
-                </div>
-              </template>
-            </UPopover>
+                </span>
+              </div>
+              <p class="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                {{ formatCurrency(product.sale_price) }}
+              </p>
+            </button>
           </div>
 
           <p v-if="isLoadingProducts" class="mt-4 text-sm text-slate-500">Loading products...</p>
@@ -825,7 +990,7 @@ function closeLastReceiptPanel() {
       </UCard>
 
       <UCard
-        class="pos-cart-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        class="pos-cart-card flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
         :ui="{ body: 'flex h-full min-h-0 flex-1 flex-col overflow-hidden' }"
       >
         <div class="flex shrink-0 items-center justify-between">
@@ -893,16 +1058,52 @@ function closeLastReceiptPanel() {
 
             <div class="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
               <p class="mb-2 text-sm font-medium">Payment</p>
+              <p v-if="!invoiceId" class="mb-2 text-xs text-amber-700 dark:text-amber-300">
+                Post the invoice to collect payment. Amounts below follow the cart total.
+              </p>
+              <p v-else-if="postedInvoiceTotal != null" class="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                Invoice total: {{ formatCurrency(postedInvoiceTotal) }}
+              </p>
               <div class="grid gap-2">
                 <UiLabeledField label="Method">
-                  <UiSearchableSelect v-model="paymentForm.method" :items="paymentMethods" />
+                  <UiSearchableSelect v-model="paymentMethod" :items="paymentMethods" />
                 </UiLabeledField>
                 <UiLabeledField label="Payment amount" html-for="pos-pay-amount">
-                  <UInput id="pos-pay-amount" v-model.number="paymentForm.amount" type="number" class="w-full" />
+                  <div
+                    id="pos-pay-amount"
+                    class="w-full rounded-md border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold tabular-nums text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  >
+                    {{ formatCurrency(paymentAmountDue) }}
+                  </div>
                 </UiLabeledField>
-                <UiLabeledField v-if="paymentForm.method === 'cash'" label="Tendered cash" html-for="pos-pay-tendered">
-                  <UInput id="pos-pay-tendered" v-model.number="paymentForm.tenderedAmount" type="number" class="w-full" />
+                <UiLabeledField v-if="paymentMethod === 'cash'" label="Tendered cash" html-for="pos-pay-tendered">
+                  <input
+                    id="pos-pay-tendered"
+                    :value="tenderedAmount === 0 ? '' : tenderedAmount"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="0"
+                    :disabled="isCollectingPayment || isWorking || !invoiceId"
+                    class="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-500/0 transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    @input="onTenderedInput"
+                  />
                 </UiLabeledField>
+                <div
+                  v-if="paymentMethod === 'cash' && cashChangeDue > 0"
+                  class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 dark:border-emerald-800 dark:bg-emerald-950/40"
+                >
+                  <p class="text-xs font-medium text-emerald-800 dark:text-emerald-300">Change to return</p>
+                  <p class="text-lg font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
+                    {{ formatCurrency(cashChangeDue) }}
+                  </p>
+                </div>
+                <p
+                  v-else-if="paymentMethod === 'cash' && cashTenderedShort > 0"
+                  class="text-xs font-medium text-red-600 dark:text-red-400"
+                >
+                  Cash tendered is short by {{ formatCurrency(cashTenderedShort) }}
+                </p>
                 <UButton
                   block
                   color="secondary"
@@ -1145,12 +1346,33 @@ function closeLastReceiptPanel() {
   background: transparent;
 }
 
+.pos-products-scroll {
+  overflow-x: hidden;
+}
+
+.pos-product-card:not(:disabled) {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
 .pos-product-card:not(:disabled):hover {
-  transform: translateY(-4px) scale(1.02);
+  transform: translateY(-4px);
+  border-color: rgb(52 211 153);
+  background-color: rgb(236 253 245);
   box-shadow:
-    0 10px 25px -5px rgb(16 185 129 / 0.15),
-    0 8px 10px -6px rgb(15 23 42 / 0.08);
-  z-index: 10;
+    0 12px 28px -8px rgb(16 185 129 / 0.22),
+    0 4px 12px -4px rgb(15 23 42 / 0.1);
+}
+
+.dark .pos-product-card:not(:disabled):hover {
+  border-color: rgb(16 185 129);
+  background-color: rgb(6 78 59 / 0.25);
+  box-shadow:
+    0 12px 28px -8px rgb(16 185 129 / 0.35),
+    0 4px 12px -4px rgb(0 0 0 / 0.35);
 }
 
 .pos-product-card:disabled {

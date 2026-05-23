@@ -38,9 +38,64 @@ const deleteConfirmOpen = ref(false)
 const deleteTarget = ref<ExpenseRow | null>(null)
 const editingId = ref<string | null>(null)
 
+type ExpensePeriod = 'today' | 'month' | 'year'
+
+const PERIOD_STORAGE_KEY = 'aone-dashboard-kpi-period'
+
+const periodChips: Array<{ label: string; value: ExpensePeriod }> = [
+  { label: 'Today', value: 'today' },
+  { label: 'Monthly', value: 'month' },
+  { label: 'Yearly', value: 'year' }
+]
+
 const filterType = ref<'__all__' | ExpenseType>('__all__')
 const filterFrom = ref('')
 const filterTo = ref('')
+const expensePeriod = ref<ExpensePeriod>('today')
+
+function isExpensePeriod(v: unknown): v is ExpensePeriod {
+  return v === 'today' || v === 'month' || v === 'year'
+}
+
+function loadExpensePeriod(): ExpensePeriod {
+  if (!import.meta.client) return 'today'
+  try {
+    const saved = localStorage.getItem(PERIOD_STORAGE_KEY)
+    if (isExpensePeriod(saved)) return saved
+  } catch {
+    /* ignore */
+  }
+  return 'today'
+}
+
+function periodToDateRange(period: ExpensePeriod): { from: string; to: string } {
+  const to = todayIso()
+  const now = new Date()
+  if (period === 'today') {
+    return { from: to, to }
+  }
+  if (period === 'month') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+    return { from: start.toISOString().slice(0, 10), to }
+  }
+  const start = new Date(now.getFullYear(), 0, 1)
+  return { from: start.toISOString().slice(0, 10), to }
+}
+
+const periodSummaryLabel = computed(() => {
+  if (expensePeriod.value === 'today') return 'Today'
+  if (expensePeriod.value === 'month') return 'This month'
+  return 'This year'
+})
+
+function setExpensePeriod(period: ExpensePeriod) {
+  expensePeriod.value = period
+  const range = periodToDateRange(period)
+  filterFrom.value = range.from
+  filterTo.value = range.to
+  if (import.meta.client) localStorage.setItem(PERIOD_STORAGE_KEY, period)
+  void load()
+}
 
 const form = reactive({
   expenseType: 'business' as ExpenseType,
@@ -222,12 +277,12 @@ watch(
 )
 
 onMounted(() => {
-  const today = todayIso()
-  const monthAgo = new Date()
-  monthAgo.setDate(monthAgo.getDate() - 30)
-  filterFrom.value = monthAgo.toISOString().slice(0, 10)
-  filterTo.value = today
-  form.expenseDate = today
+  const period = loadExpensePeriod()
+  expensePeriod.value = period
+  const range = periodToDateRange(period)
+  filterFrom.value = range.from
+  filterTo.value = range.to
+  form.expenseDate = todayIso()
   void load()
 })
 </script>
@@ -241,7 +296,25 @@ onMounted(() => {
           Track personal, business, and charity spending alongside sales on the dashboard.
         </p>
       </div>
-      <UButton icon="i-lucide-refresh-cw" variant="soft" :loading="loading" @click="load">Refresh</UButton>
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-900/50">
+          <button
+            v-for="chip in periodChips"
+            :key="chip.value"
+            type="button"
+            class="rounded-full px-4 py-1.5 text-sm font-medium transition-colors"
+            :class="
+              expensePeriod === chip.value
+                ? 'bg-primary text-white shadow-sm'
+                : 'text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-800'
+            "
+            @click="setExpensePeriod(chip.value)"
+          >
+            {{ chip.label }}
+          </button>
+        </div>
+        <UButton icon="i-lucide-refresh-cw" variant="soft" :loading="loading" @click="load">Refresh</UButton>
+      </div>
     </div>
 
     <UAlert
@@ -254,7 +327,7 @@ onMounted(() => {
 
     <div v-if="summary" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <UCard class="bg-slate-50 dark:bg-slate-800/50">
-        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Total (period)</p>
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Total · {{ periodSummaryLabel }}</p>
         <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-slate-100">{{ fmtPkr(summary.total) }}</p>
       </UCard>
       <UCard v-for="t in EXPENSE_TYPES" :key="t">
@@ -319,6 +392,10 @@ onMounted(() => {
           <UiLabeledField label="To" html-for="exp-filter-to">
             <UInput id="exp-filter-to" v-model="filterTo" type="date" class="w-full" />
           </UiLabeledField>
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            Period: <span class="font-medium text-slate-700 dark:text-slate-200">{{ periodSummaryLabel }}</span>
+            (use chips above or pick custom dates)
+          </p>
           <UButton icon="i-lucide-filter" :loading="loading" @click="load">Apply filters</UButton>
         </div>
       </UCard>
