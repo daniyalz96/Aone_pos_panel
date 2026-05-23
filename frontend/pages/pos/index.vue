@@ -157,11 +157,11 @@ const paymentAmountDue = computed(() => {
   return total.value
 })
 
-function ensureTenderedMeetsMinimum() {
+/** Keep tendered cash aligned with cart/invoice total when items change. */
+function syncTenderedToPaymentDue() {
+  if (paymentMethod.value !== 'cash') return
   const due = paymentAmountDue.value
-  if (paymentMethod.value === 'cash' && Number(tenderedAmount.value) < due) {
-    tenderedAmount.value = due
-  }
+  tenderedAmount.value = due > 0 ? due : 0
 }
 
 function onTenderedInput(event: Event) {
@@ -496,7 +496,7 @@ async function restorePosSession() {
     tenderedAmount.value = saved.tenderedAmount
     selectedCategoryId.value = saved.selectedCategoryId || ALL_CATEGORIES_ID
     await refreshOrder()
-    ensureTenderedMeetsMinimum()
+    syncTenderedToPaymentDue()
   } catch {
     clearPosSession()
     orderId.value = null
@@ -517,12 +517,12 @@ watch(showLastReceipt, (value) => {
   }
 })
 
-watch(paymentMethod, () => ensureTenderedMeetsMinimum())
+watch(paymentMethod, () => syncTenderedToPaymentDue())
 
 watch(
   [orderId, orderStatus, invoiceId, postedInvoiceTotal, paymentMethod, selectedCategoryId, cart, total],
   () => {
-    ensureTenderedMeetsMinimum()
+    syncTenderedToPaymentDue()
     persistPosSession()
   },
   { deep: true }
@@ -888,9 +888,9 @@ function closeLastReceiptPanel() {
 </script>
 
 <template>
-  <div class="pos-billing-root flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+  <div class="pos-billing-root flex min-h-0 flex-col gap-4 max-xl:min-h-0 xl:flex-1 xl:overflow-hidden">
     <section
-      class="grid min-h-0 min-w-0 flex-1 gap-4 overflow-hidden sm:gap-5 xl:gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,24rem)]"
+      class="grid min-h-0 min-w-0 gap-4 sm:gap-5 max-xl:min-h-0 xl:flex-1 xl:gap-6 xl:overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(20rem,24rem)]"
     >
       <UCard
         class="pos-billing-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
