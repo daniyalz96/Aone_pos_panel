@@ -100,8 +100,12 @@ watch(mobileNavOpen, (open) => {
         </header>
 
         <main
-          class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
-          :class="isPosRoute ? 'px-2 py-3 sm:px-3 sm:py-4' : 'px-3 py-4 sm:px-4 sm:py-5 lg:px-5 lg:py-6'"
+          class="min-h-0 min-w-0 flex-1"
+          :class="
+            isPosRoute
+              ? 'flex flex-col overflow-y-auto overscroll-contain px-2 py-3 sm:px-3 sm:py-4 xl:overflow-hidden'
+              : 'overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-5 lg:px-5 lg:py-6'
+          "
         >
           <slot />
         </main>

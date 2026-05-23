@@ -888,12 +888,15 @@ function closeLastReceiptPanel() {
 </script>
 
 <template>
-  <div class="pos-billing-root flex flex-col gap-4 max-xl:min-h-0 xl:h-[calc(100dvh-10.5rem)] xl:min-h-[28rem] xl:overflow-hidden">
-    <section class="grid min-h-0 min-w-0 gap-4 max-xl:min-h-0 sm:gap-5 xl:flex-1 xl:gap-6 xl:overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(26rem,30rem)]">
+  <div class="pos-billing-root flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+    <section
+      class="grid min-h-0 min-w-0 flex-1 gap-4 overflow-hidden sm:gap-5 xl:gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,24rem)]"
+    >
       <UCard
-        class="flex min-h-0 min-w-0 flex-col overflow-hidden"
-        :ui="{ body: 'flex min-h-0 flex-1 flex-col' }"
+        class="pos-billing-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        :ui="{ body: 'flex min-h-0 flex-1 flex-col overflow-hidden' }"
       >
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div class="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
           <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Billing Counter</h2>
           <div class="flex flex-wrap gap-2">
@@ -940,7 +943,7 @@ function closeLastReceiptPanel() {
           </div>
         </div>
 
-        <div class="pos-products-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pt-4">
+        <div class="pos-products-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-0.5 pb-6 pt-4">
           <div class="grid gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             <button
               v-for="product in activeProducts"
@@ -986,6 +989,7 @@ function closeLastReceiptPanel() {
           <p v-else-if="activeProducts.length === 0" class="mt-4 text-sm text-slate-500">
             No products found for current search/category.
           </p>
+        </div>
         </div>
       </UCard>
 
@@ -1318,15 +1322,27 @@ function closeLastReceiptPanel() {
   </div>
 </template>
 
-<style>
-@media (min-width: 1280px) {
-  main:has(.pos-billing-root) {
-    overflow: hidden;
-  }
-}
-</style>
-
 <style scoped>
+.pos-billing-card {
+  min-height: 0;
+}
+
+.pos-billing-card :deep(> div) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pos-billing-card :deep([class*='body']) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .pos-category-scroll {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
