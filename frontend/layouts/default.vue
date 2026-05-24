@@ -2,11 +2,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from '#imports'
 import { useAuth } from '~/composables/useAuth'
+import { useLowStockAlertsBoot } from '~/composables/useLowStockAlerts'
 import { useTodayOverview } from '~/composables/useTodayOverview'
 
 const route = useRoute()
 const { user, clearAuth } = useAuth()
 const { refreshTodayOverview } = useTodayOverview()
+const { lowStockCount, hasLowStock } = useLowStockAlertsBoot()
 const mobileNavOpen = ref(false)
 
 const isPosRoute = computed(() => route.path === '/pos' || route.path.startsWith('/pos/'))
@@ -84,6 +86,25 @@ watch(mobileNavOpen, (open) => {
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-1.5 sm:gap-3">
+              <div class="relative inline-flex">
+                <UButton
+                  to="/inventory"
+                  color="warning"
+                  variant="soft"
+                  icon="i-lucide-triangle-alert"
+                  aria-label="Low stock alerts"
+                  :title="hasLowStock ? `${lowStockCount} low stock item(s)` : 'Low stock alerts'"
+                />
+                <UBadge
+                  v-if="hasLowStock"
+                  color="error"
+                  variant="solid"
+                  size="xs"
+                  class="pointer-events-none absolute -right-1 -top-1 min-w-[1.25rem] justify-center px-1"
+                >
+                  {{ lowStockCount > 99 ? '99+' : lowStockCount }}
+                </UBadge>
+              </div>
               <UiThemeToggle />
               <UButton
                 color="neutral"

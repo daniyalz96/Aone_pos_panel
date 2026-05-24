@@ -9,6 +9,9 @@ import {
   SQL_NET_GROSS_PROFIT_SUM,
   SQL_NET_SALES_SUM,
   SQL_RETURN_TOTAL_SUM,
+  buildProfitLossSummaryQuery,
+  buildProfitLossTotalsQuery,
+  type ProfitLossGroupBy,
 } from "../services/salesMetricsSql.js";
 
 const router = Router();
@@ -324,173 +327,11 @@ router.get("/profit-loss-summary", requireAuth, requireRole("admin", "manager"),
   const to = parsed.data.to ? new Date(parsed.data.to) : new Date();
   const branchId = parsed.data.branchId ?? null;
   const cashierId = parsed.data.cashierId ?? null;
-  const groupBy = parsed.data.groupBy;
+  const groupBy = parsed.data.groupBy as ProfitLossGroupBy;
   const params = [from.toISOString(), to.toISOString(), branchId, cashierId];
 
-  let rows;
-  if (groupBy === "category") {
-    rows = await pool.query(
-      `
-        SELECT
-          COALESCE(c.id::text, '__none__') AS group_key,
-          COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS group_label,
-          COUNT(DISTINCT i.id)::int AS invoice_count,
-          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-          (
-            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-          )::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        JOIN products p ON p.id = ii.product_id
-        LEFT JOIN categories c ON c.id = p.category_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY c.id, c.name
-        ORDER BY gross_profit DESC
-      `,
-      params,
-    );
-  } else if (groupBy === "department") {
-    rows = await pool.query(
-      `
-        SELECT
-          COALESCE(d.id::text, '__none__') AS group_key,
-          COALESCE(NULLIF(TRIM(d.name), ''), 'No department') AS group_label,
-          COUNT(DISTINCT i.id)::int AS invoice_count,
-          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-          (
-            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-          )::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        JOIN products p ON p.id = ii.product_id
-        LEFT JOIN categories c ON c.id = p.category_id
-        LEFT JOIN departments d ON d.id = c.department_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY d.id, d.name
-        ORDER BY gross_profit DESC
-      `,
-      params,
-    );
-  } else if (groupBy === "day") {
-    rows = await pool.query(
-      `
-        SELECT
-          to_char(date_trunc('day', i.created_at), 'YYYY-MM-DD') AS group_key,
-          to_char(date_trunc('day', i.created_at), 'YYYY-MM-DD') AS group_label,
-          COUNT(DISTINCT i.id)::int AS invoice_count,
-          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-          (
-            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-          )::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        JOIN products p ON p.id = ii.product_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY date_trunc('day', i.created_at)
-        ORDER BY date_trunc('day', i.created_at) ASC
-      `,
-      params,
-    );
-  } else if (groupBy === "month") {
-    rows = await pool.query(
-      `
-        SELECT
-          to_char(date_trunc('month', i.created_at), 'YYYY-MM') AS group_key,
-          to_char(date_trunc('month', i.created_at), 'YYYY-MM') AS group_label,
-          COUNT(DISTINCT i.id)::int AS invoice_count,
-          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-          (
-            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-          )::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        JOIN products p ON p.id = ii.product_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY date_trunc('month', i.created_at)
-        ORDER BY date_trunc('month', i.created_at) DESC
-      `,
-      params,
-    );
-  } else {
-    rows = await pool.query(
-      `
-        SELECT
-          ii.product_id::text AS group_key,
-          COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(ii.product_name), ''), 'Unknown product') AS group_label,
-          COUNT(DISTINCT i.id)::int AS invoice_count,
-          COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-          COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-          COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-          COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-          COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-          (
-            COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-          )::numeric(14,2) AS gross_profit
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        JOIN products p ON p.id = ii.product_id
-        WHERE i.created_at BETWEEN $1 AND $2
-          AND i.invoice_status <> 'voided'
-          AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-          AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-        GROUP BY ii.product_id, p.name, ii.product_name
-        ORDER BY gross_profit DESC
-        LIMIT 500
-      `,
-      params,
-    );
-  }
-
-  const totalsRow = await pool.query(
-    `
-      SELECT
-        COUNT(DISTINCT i.id)::int AS invoice_count,
-        COALESCE(SUM(ii.qty), 0)::numeric(14,3) AS qty_sold,
-        COALESCE(SUM(ii.line_total), 0)::numeric(14,2) AS total_sales,
-        COALESCE(SUM(ii.discount_amount), 0)::numeric(14,2) AS discount,
-        COALESCE(SUM(ii.pre_tax_amount), 0)::numeric(14,2) AS revenue_ex_tax,
-        COALESCE(SUM(ii.qty * p.cost_price), 0)::numeric(14,2) AS cogs,
-        (
-          COALESCE(SUM(ii.pre_tax_amount), 0) - COALESCE(SUM(ii.qty * p.cost_price), 0)
-        )::numeric(14,2) AS gross_profit
-      FROM invoice_items ii
-      JOIN invoices i ON i.id = ii.invoice_id
-      JOIN products p ON p.id = ii.product_id
-      WHERE i.created_at BETWEEN $1 AND $2
-        AND i.invoice_status <> 'voided'
-        AND ($3::uuid IS NULL OR i.branch_id = $3::uuid)
-        AND ($4::uuid IS NULL OR i.posted_by = $4::uuid)
-    `,
-    params,
-  );
+  const rows = await pool.query(buildProfitLossSummaryQuery(groupBy), params);
+  const totalsRow = await pool.query(buildProfitLossTotalsQuery(), params);
 
   const t = totalsRow.rows[0];
   const revenue = Number(t.revenue_ex_tax);

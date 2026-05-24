@@ -2,7 +2,9 @@ import { Router } from "express";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { DEFAULT_LOW_STOCK_THRESHOLD } from "../config/inventory.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
+import { notifyLowStockForProduct } from "../services/lowStockAlerts.js";
 import { createAuditLog } from "../utils/audit.js";
 
 const router = Router();
@@ -157,6 +159,7 @@ async function applyStockMovement(params: {
 
     if (ownsTransaction) {
       await client.query("COMMIT");
+      void notifyLowStockForProduct(params.productId).catch(() => undefined);
     }
     return { productId: params.productId, previousQty: currentQty, nextQty };
   } catch (error) {
@@ -555,6 +558,7 @@ router.patch("/balances/:productId", requireAuth, requirePermission("manage_inve
     }
 
     await client.query("COMMIT");
+    void notifyLowStockForProduct(productId).catch(() => undefined);
     return res.json({
       productId,
       previousQty: currentQty,
@@ -577,7 +581,7 @@ router.get("/low-stock", requireAuth, async (req, res) => {
   }
   const pagination = parsed.data;
 
-  const threshold = Math.max(0, Number(req.query.threshold ?? 5));
+  const threshold = Math.max(0, Number(req.query.threshold ?? DEFAULT_LOW_STOCK_THRESHOLD));
   const branchId = req.query.branchId as string | undefined;
   if (branchId) {
     const branchResult = await pool.query(

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { DEFAULT_LOW_STOCK_THRESHOLD } from "../config/inventory.js";
 import {
   SQL_INVOICE_GROSS_PROFIT_SUBQUERY,
   SQL_INVOICE_RETURNED_PROFIT_SUBQUERY,
@@ -26,7 +27,7 @@ export async function handleDashboardSummary(req: Request, res: Response) {
 
   const branchId = parsed.data.branchId ?? null;
   const cashierId = parsed.data.cashierId ?? null;
-  const threshold = parsed.data.lowStockThreshold ?? 5;
+  const threshold = parsed.data.lowStockThreshold ?? DEFAULT_LOW_STOCK_THRESHOLD;
 
   const now = new Date();
   const todayStart = new Date(now);

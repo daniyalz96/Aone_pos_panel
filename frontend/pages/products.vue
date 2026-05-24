@@ -53,6 +53,8 @@ type Product = {
   sale_price: number
   cost_price: number
   tax_rate: number
+  qty_on_hand?: number | string
+  opening_balance?: string | number | null
   category_name?: string
   category_id?: string | null
   image_url?: string | null
@@ -216,10 +218,20 @@ const editForm = reactive({
   salePrice: 0,
   costPrice: 0,
   taxRate: 0,
+  qtyOnHand: 0,
+  openingBalance: 0,
   imageUrl: '',
   categoryId: NO_CATEGORY_VALUE,
   isActive: true
 })
+
+const editSaving = ref(false)
+
+function formatQtyWhole(value: number | string | null | undefined) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '0'
+  return Math.round(n).toLocaleString()
+}
 
 const categoryLabel = (category: Category) =>
   category.department_name ? `${category.name} (${category.department_name})` : category.name
@@ -800,8 +812,13 @@ const openEditProduct = (product: Product) => {
   editForm.sku = product.sku
   editForm.barcode = product.barcode
   editForm.salePrice = Number(product.sale_price)
-  editForm.costPrice = Number(product.cost_price)
+  editForm.costPrice = Number(product.cost_price ?? 0)
   editForm.taxRate = Number(product.tax_rate)
+  editForm.qtyOnHand = Number(product.qty_on_hand ?? 0)
+  const ob = product.opening_balance
+  const hasOpening =
+    ob !== null && ob !== undefined && ob !== '' && Number.isFinite(Number(ob))
+  editForm.openingBalance = hasOpening ? Number(ob) : Number(product.qty_on_hand ?? 0)
   editForm.imageUrl = product.image_url ?? ''
   editForm.isActive = normalizeActiveFlag(product.is_active)
   const cid =
@@ -817,30 +834,69 @@ const openEditProduct = (product: Product) => {
 }
 
 const updateProduct = async () => {
-  if (!editingProductId.value) return
+  if (!editingProductId.value || editSaving.value) return
+  const id = editingProductId.value
+  const salePrice = Number(editForm.salePrice)
+  const costPrice = Number(editForm.costPrice)
+  const qty = Number(editForm.qtyOnHand)
+  const opening = Number(editForm.openingBalance)
+  if (!Number.isFinite(salePrice) || salePrice <= 0) {
+    errorMessage.value = 'Sale price must be a positive number.'
+    return
+  }
+  if (!Number.isFinite(costPrice) || costPrice < 0) {
+    errorMessage.value = 'Cost price must be zero or greater.'
+    return
+  }
+  if (!Number.isFinite(opening) || opening < 0) {
+    errorMessage.value = 'Opening balance must be zero or greater.'
+    return
+  }
+  if (!Number.isFinite(qty)) {
+    errorMessage.value = 'Qty on hand must be a valid number.'
+    return
+  }
+
   errorMessage.value = ''
+  editSaving.value = true
   try {
     const categoryIdResolved = resolveCategoryPayload(editForm.categoryId)
     const body: Record<string, unknown> = {
       name: editForm.name,
       sku: editForm.sku,
       barcode: editForm.barcode,
-      salePrice: Number(editForm.salePrice),
-      costPrice: Number(editForm.costPrice),
+      salePrice,
+      costPrice,
       taxRate: Number(editForm.taxRate),
       imageUrl: editForm.imageUrl.trim() || undefined,
       isActive: toBooleanStrict(editForm.isActive, true)
     }
     body.categoryId = categoryIdResolved === undefined ? null : categoryIdResolved
-    await request(`/products/${editingProductId.value}`, {
+    await request(`/products/${id}`, {
       method: 'PATCH',
       body
+    })
+    await request(`/inventory/balances/${id}`, {
+      method: 'PATCH',
+      body: {
+        qtyOnHand: Math.round(qty * 1000) / 1000,
+        openingBalance: Math.round(opening * 1000) / 1000,
+        reason: 'Updated from products screen'
+      }
     })
     isEditModalOpen.value = false
     editingProductId.value = null
     await loadData()
+    toast.add({
+      title: 'Product updated',
+      description: 'Product details and stock were saved.',
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Failed to update product'
+  } finally {
+    editSaving.value = false
   }
 }
 
@@ -1519,11 +1575,10 @@ onMounted(async () => {
               </th>
               <th class="px-3 py-2">Name</th>
               <th class="px-3 py-2">Image</th>
-              <th class="px-3 py-2">SKU</th>
-              <th class="px-3 py-2">Barcode</th>
               <th class="px-3 py-2">Category</th>
               <th class="px-3 py-2">Sale</th>
-              <th class="px-3 py-2">Tax %</th>
+              <th class="px-3 py-2">Cost</th>
+              <th class="px-3 py-2 text-right">Qty on hand</th>
               <th class="px-3 py-2">Status</th>
               <th class="px-3 py-2">Actions</th>
             </tr>
@@ -1551,11 +1606,10 @@ onMounted(async () => {
                 />
                 <span v-else class="text-slate-400">-</span>
               </td>
-              <td class="px-3 py-2">{{ product.sku }}</td>
-              <td class="px-3 py-2">{{ product.barcode }}</td>
               <td class="px-3 py-2">{{ product.category_name || '-' }}</td>
               <td class="px-3 py-2">Rs {{ Number(product.sale_price).toLocaleString() }}</td>
-              <td class="px-3 py-2">{{ product.tax_rate }}</td>
+              <td class="px-3 py-2">Rs {{ Number(product.cost_price ?? 0).toLocaleString() }}</td>
+              <td class="px-3 py-2 text-right tabular-nums">{{ formatQtyWhole(product.qty_on_hand) }}</td>
               <td class="px-3 py-2">
                 <UBadge :color="product.is_active ? 'success' : 'neutral'" variant="soft">
                   {{ product.is_active ? 'Enabled' : 'Disabled' }}
@@ -1592,7 +1646,7 @@ onMounted(async () => {
               </td>
             </tr>
             <tr v-if="!products.length && !isLoading">
-              <td class="px-3 py-4 text-slate-500" :colspan="canManageProducts ? 10 : 9">No products found.</td>
+              <td class="px-3 py-4 text-slate-500" :colspan="canManageProducts ? 9 : 8">No products found.</td>
             </tr>
           </tbody>
         </table>
@@ -1683,12 +1737,27 @@ onMounted(async () => {
             <UInput id="prd-edit-sale" v-model.number="editForm.salePrice" class="w-full" type="number" placeholder="0.00" />
           </div>
           <div class="flex min-w-0 flex-col gap-1.5">
-            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-cost">Cost price</label>
-            <UInput id="prd-edit-cost" v-model.number="editForm.costPrice" class="w-full" type="number" placeholder="0.00" />
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-cost">Cost price (Rs)</label>
+            <UInput id="prd-edit-cost" v-model.number="editForm.costPrice" class="w-full" type="number" min="0" step="0.01" placeholder="0.00" />
           </div>
           <div class="flex min-w-0 flex-col gap-1.5">
-            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-tax">Tax %</label>
-            <UInput id="prd-edit-tax" v-model.number="editForm.taxRate" class="w-full" type="number" placeholder="0" />
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-qty">Qty on hand</label>
+            <UInput id="prd-edit-qty" v-model.number="editForm.qtyOnHand" class="w-full" type="number" min="0" step="1" placeholder="0" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1.5">
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-opening">Opening balance</label>
+            <UInput
+              id="prd-edit-opening"
+              v-model.number="editForm.openingBalance"
+              class="w-full"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="0"
+            />
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Reference starting quantity for inventory tracking.
+            </p>
           </div>
           <div class="flex min-w-0 flex-col gap-1.5">
             <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="prd-edit-category">Category</label>
@@ -1730,7 +1799,7 @@ onMounted(async () => {
 
           <div class="sm:col-span-2 mt-2 flex justify-end gap-2">
             <UButton color="neutral" variant="soft" @click="isEditModalOpen = false">Cancel</UButton>
-            <UButton icon="i-lucide-save" @click="updateProduct">Update Product</UButton>
+            <UButton icon="i-lucide-save" :loading="editSaving" @click="updateProduct">Update Product</UButton>
           </div>
         </div>
       </div>

@@ -5,6 +5,7 @@ import { ApiError, useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { selectToPrimitive } from '~/composables/useSelectValue'
 import { formatRs } from '~/composables/useMoneyFormat'
+import { LOW_STOCK_THRESHOLD } from '~/constants/inventory'
 
 type Department = { id: string; name: string; is_active?: boolean }
 
@@ -435,6 +436,7 @@ const balancesListUrl = () => withQuery('/inventory/balances', balancesListQuery
 
 const lowStockListUrl = () =>
   withQuery('/inventory/low-stock', {
+    threshold: LOW_STOCK_THRESHOLD,
     limit: PAGE_SIZE,
     offset: (lowStockPage.value - 1) * PAGE_SIZE,
     withTotal: 'true'
@@ -855,7 +857,8 @@ onMounted(async () => {
 
     <div class="grid gap-4 lg:grid-cols-2">
       <UCard>
-        <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Low Stock Alerts</h2>
+        <h2 class="mb-1 text-lg font-semibold text-slate-900 dark:text-slate-100">Low Stock Alerts</h2>
+        <p class="mb-3 text-sm text-slate-500">Products with {{ LOW_STOCK_THRESHOLD }} or fewer units on hand.</p>
         <div class="table-scroll table-scroll-sm">
           <div class="space-y-2">
             <div v-for="item in lowStock" :key="item.product_id" class="grid gap-2 rounded-lg bg-amber-50 p-3 text-sm sm:grid-cols-3 dark:bg-amber-950/30">

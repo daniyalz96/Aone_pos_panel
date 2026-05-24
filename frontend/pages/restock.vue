@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useApi } from '~/composables/useApi'
+import { LOW_STOCK_THRESHOLD } from '~/constants/inventory'
 
 type Balance = {
   product_id: string
@@ -32,7 +33,7 @@ const loadData = async () => {
   errorMessage.value = ''
   try {
     const [lowRes, productRes] = await Promise.all([
-      request<Balance[]>('/inventory/low-stock'),
+      request<Balance[]>(`/inventory/low-stock?threshold=${LOW_STOCK_THRESHOLD}`),
       request<Array<{ id: string; name: string; sku: string }>>('/products')
     ])
     lowStock.value = lowRes

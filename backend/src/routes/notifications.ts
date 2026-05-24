@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { DEFAULT_LOW_STOCK_THRESHOLD } from "../config/inventory.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { syncLowStockNotifications } from "../services/lowStockAlerts.js";
 
 const router = Router();
 
@@ -143,7 +145,7 @@ router.patch("/:id/ack", requireAuth, async (req, res) => {
 
 router.post("/automation/run", requireAuth, requireRole("admin", "manager"), async (req, res) => {
   const schema = z.object({
-    lowStockThresholdFallback: z.number().min(0).default(5),
+    lowStockThresholdFallback: z.number().min(0).default(DEFAULT_LOW_STOCK_THRESHOLD),
     pendingOrderMinutes: z.number().int().min(1).default(30),
     shiftReminderHours: z.number().int().min(1).default(12),
     syncLookbackHours: z.number().int().min(1).default(24),
@@ -155,43 +157,8 @@ router.post("/automation/run", requireAuth, requireRole("admin", "manager"), asy
 
   const created: unknown[] = [];
 
-  // 1) Low stock alerts.
-  const lowStockRows = await pool.query(
-    `
-      SELECT
-        p.id AS product_id,
-        p.name,
-        p.sku,
-        p.low_stock_threshold,
-        COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
-      FROM products p
-      LEFT JOIN inventory_balances ib ON ib.product_id = p.id
-      WHERE p.is_active = TRUE
-        AND COALESCE(ib.qty_on_hand, 0) <= GREATEST(p.low_stock_threshold, $1)
-      ORDER BY qty_on_hand ASC
-      LIMIT 200
-    `,
-    [parsed.data.lowStockThresholdFallback],
-  );
-
-  for (const row of lowStockRows.rows) {
-    const inserted = await insertNotificationIfOpen({
-      type: "low_stock",
-      severity: "warning",
-      title: "Low stock alert",
-      message: `${row.name as string} (${row.sku as string}) is low on stock: ${Number(row.qty_on_hand).toFixed(3)}`,
-      dedupeKey: `low_stock:${row.product_id as string}`,
-      sourceType: "product",
-      sourceId: row.product_id as string,
-      metadata: {
-        qtyOnHand: Number(row.qty_on_hand),
-        threshold: Number(row.low_stock_threshold),
-      },
-    });
-    if (inserted) created.push(inserted);
-  }
-
-  // 2) Sync failure alerts.
+  const lowStockCreated = await syncLowStockNotifications(parsed.data.lowStockThresholdFallback);
+  created.push(...lowStockCreated);
   const syncRows = await pool.query(
     `
       SELECT id, client_tx_id, status, error_message

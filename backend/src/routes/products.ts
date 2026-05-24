@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { DEFAULT_LOW_STOCK_THRESHOLD } from "../config/inventory.js";
 import { requireAuth, requireInventoryManagement } from "../middleware/auth.js";
 import { createAuditLog } from "../utils/audit.js";
 
@@ -39,7 +40,7 @@ const createProductSchema = z.object({
   taxRate: z.number().min(0).max(100).default(0),
   imageUrl: z.string().max(5_000_000).optional(),
   categoryId: z.string().uuid().optional(),
-  lowStockThreshold: z.number().min(0).default(5),
+  lowStockThreshold: z.number().min(0).default(DEFAULT_LOW_STOCK_THRESHOLD),
   isActive: booleanLike.optional(),
 });
 
@@ -219,7 +220,8 @@ router.get("/", requireAuth, async (req, res) => {
       SELECT
         p.*,
         c.name AS category_name,
-        COALESCE(ib.qty_on_hand, 0) AS qty_on_hand
+        COALESCE(ib.qty_on_hand, 0) AS qty_on_hand,
+        ib.opening_balance AS opening_balance
       FROM products p
       LEFT JOIN categories c ON c.id = p.category_id
       LEFT JOIN inventory_balances ib ON ib.product_id = p.id

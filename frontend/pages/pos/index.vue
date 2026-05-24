@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useApi } from '~/composables/useApi'
 import { clearPosSession, readPosSession, writePosSession } from '~/composables/usePosSession'
 import { useTodayOverview } from '~/composables/useTodayOverview'
+import { LOW_STOCK_THRESHOLD } from '~/constants/inventory'
 
 type Product = {
   id: string
@@ -283,7 +284,8 @@ const formatStockQty = (qty: number) => {
 
 const stockQtyClass = (qty: number) => {
   if (qty < 0) return 'text-red-600 dark:text-red-400'
-  if (qty === 0) return 'text-amber-600 dark:text-amber-400'
+  if (qty === 0) return 'text-red-600 dark:text-red-400'
+  if (qty <= LOW_STOCK_THRESHOLD) return 'text-amber-600 dark:text-amber-400'
   return 'text-slate-800 dark:text-slate-100'
 }
 
@@ -1315,6 +1317,12 @@ function closeLastReceiptPanel() {
               </span>
               <span v-if="Number(selectedProduct?.qty_on_hand ?? 0) <= 0" class="text-amber-600 dark:text-amber-400">
                 (sale allowed; stock may go negative)
+              </span>
+              <span
+                v-else-if="Number(selectedProduct?.qty_on_hand ?? 0) <= LOW_STOCK_THRESHOLD"
+                class="text-amber-600 dark:text-amber-400"
+              >
+                (low stock — {{ LOW_STOCK_THRESHOLD }} or fewer left)
               </span>
             </UiDetailField>
             <UiDetailField label="Unit price" :value="formatCurrency(Number(selectedProduct?.sale_price ?? 0))" />

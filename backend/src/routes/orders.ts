@@ -5,7 +5,19 @@ import { pool } from "../db/pool.js";
 import { requireAuth, requirePermission, requireRole } from "../middleware/auth.js";
 import { createAuditLog } from "../utils/audit.js";
 import { postJournalEntry } from "../services/ledger.js";
+import { notifyLowStockForProduct } from "../services/lowStockAlerts.js";
 import { executeOrderCancel } from "../services/voiding.js";
+
+async function lowStockProductIdsForOrder(client: PoolClient, orderId: string): Promise<string[]> {
+  const rows = await client.query(`SELECT DISTINCT product_id FROM order_items WHERE order_id = $1`, [orderId]);
+  return rows.rows.map((row) => row.product_id as string);
+}
+
+function queueLowStockNotify(productIds: string[]) {
+  for (const productId of new Set(productIds)) {
+    void notifyLowStockForProduct(productId).catch(() => undefined);
+  }
+}
 
 function settlementAccountByMethod(method: "cash" | "card" | "qr" | "wallet" | "bank") {
   return method === "bank" || method === "card" ? "1010" : "1000";
@@ -464,7 +476,9 @@ router.post("/manual-sale", requireAuth, requireRole("admin", "manager"), async 
       afterData: { orderId, source: "reports_manual_sale" },
     });
 
+    const stockProductIds = await lowStockProductIdsForOrder(client, orderId);
     await client.query("COMMIT");
+    queueLowStockNotify(stockProductIds);
     const refreshedInv = await pool.query(`SELECT * FROM invoices WHERE id = $1`, [invoiceId]);
     return res.status(201).json({
       invoice: refreshedInv.rows[0],
@@ -642,7 +656,9 @@ router.post("/:id/post", requireAuth, async (req, res) => {
       orderId,
       userId: req.user?.id ?? null,
     });
+    const stockProductIds = await lowStockProductIdsForOrder(client, orderId);
     await client.query("COMMIT");
+    queueLowStockNotify(stockProductIds);
     return res.status(201).json(invoiceRow);
   } catch (error: unknown) {
     await client.query("ROLLBACK");
