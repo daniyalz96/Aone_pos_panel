@@ -925,10 +925,10 @@ function closeLastReceiptPanel() {
       class="grid min-h-0 min-w-0 gap-4 sm:gap-5 max-xl:min-h-0 xl:flex-1 xl:gap-6 xl:overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(20rem,24rem)]"
     >
       <UCard
-        class="pos-billing-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
-        :ui="{ body: 'flex min-h-0 flex-1 flex-col overflow-hidden' }"
+        class="pos-billing-card flex min-h-0 min-w-0 flex-col max-xl:h-auto max-xl:overflow-visible xl:h-full xl:overflow-hidden"
+        :ui="{ body: 'flex min-h-0 flex-1 flex-col max-xl:overflow-visible xl:overflow-hidden' }"
       >
-        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div class="flex min-h-0 flex-1 flex-col max-xl:min-h-0 max-xl:overflow-visible xl:overflow-hidden">
         <div class="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
           <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Billing Counter</h2>
           <div class="flex flex-wrap gap-2">
@@ -975,8 +975,8 @@ function closeLastReceiptPanel() {
           </div>
         </div>
 
-        <div class="pos-products-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-0.5 pb-6 pt-4">
-          <div class="grid gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+        <div class="pos-products-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-0.5 pb-6 pt-4 max-xl:min-h-[min(70dvh,38rem)] max-xl:flex-none">
+          <div class="grid gap-2.5 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             <button
               v-for="product in activeProducts"
               :key="product.product_id"
@@ -989,7 +989,7 @@ function closeLastReceiptPanel() {
                 <img
                   :src="product.image_url || DEFAULT_PRODUCT_IMAGE"
                   alt=""
-                  class="h-28 w-full rounded-lg object-cover sm:h-32 lg:h-36"
+                  class="h-24 w-full rounded-lg object-cover sm:h-28 lg:h-36"
                 />
               </div>
               <UiTruncatedText
@@ -1026,7 +1026,7 @@ function closeLastReceiptPanel() {
       </UCard>
 
       <UCard
-        class="pos-cart-card flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
+        class="pos-cart-card flex min-h-0 w-full min-w-0 flex-col max-xl:h-auto xl:h-full xl:overflow-hidden"
         :ui="{ body: 'flex h-full min-h-0 flex-1 flex-col overflow-hidden' }"
       >
         <div class="flex shrink-0 items-center justify-between">
@@ -1469,9 +1469,44 @@ function closeLastReceiptPanel() {
 }
 
 @media (max-width: 1279px) {
+  .pos-billing-root > section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .pos-billing-card {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+
+  .pos-billing-card :deep(> div),
+  .pos-billing-card :deep([class*='body']) {
+    overflow: visible;
+    height: auto;
+    flex: none;
+  }
+
+  .pos-products-scroll {
+    flex: none;
+    min-height: min(70dvh, 38rem);
+    max-height: min(78dvh, 42rem);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .pos-cart-card {
-    max-height: min(72dvh, 38rem);
-    min-height: 18rem;
+    flex: 0 0 auto;
+    max-height: min(46dvh, 22rem);
+    min-height: 12rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .pos-cart-card {
+    max-height: 100%;
   }
 }
 
