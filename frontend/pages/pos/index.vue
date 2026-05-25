@@ -145,6 +145,7 @@ const isAddModalOpen = ref(false)
 const selectedProduct = ref<ProductResult | null>(null)
 const addItemForm = reactive({
   qty: 1,
+  salePrice: 0,
   discountType: 'amount' as 'amount' | 'percent',
   discountValue: 0
 })
@@ -542,6 +543,7 @@ watch(tenderedAmount, () => persistPosSession())
 const openAddItemModal = (product: ProductResult) => {
   selectedProduct.value = product
   addItemForm.qty = 1
+  addItemForm.salePrice = Number(product.sale_price)
   addItemForm.discountType = 'amount'
   addItemForm.discountValue = 0
   isAddModalOpen.value = true
@@ -549,18 +551,39 @@ const openAddItemModal = (product: ProductResult) => {
 
 const confirmAddItem = async () => {
   if (!selectedProduct.value) return
+  const qty = Number(addItemForm.qty)
+  const salePrice = Number(addItemForm.salePrice)
+  const catalogPrice = Number(selectedProduct.value.sale_price)
+  if (!Number.isFinite(qty) || qty <= 0) {
+    errorMessage.value = 'Quantity must be greater than zero.'
+    return
+  }
+  if (!Number.isFinite(salePrice) || salePrice <= 0) {
+    errorMessage.value = 'Sale price must be a positive number.'
+    return
+  }
   clearError()
   try {
     isWorking.value = true
     const id = await ensureOrder()
+    const body: {
+      productId: string
+      qty: number
+      discountType: 'amount' | 'percent'
+      discountValue: number
+      priceOverride?: number
+    } = {
+      productId: selectedProduct.value.product_id,
+      qty,
+      discountType: addItemForm.discountType,
+      discountValue: Number(addItemForm.discountValue)
+    }
+    if (Math.abs(salePrice - catalogPrice) > 0.001) {
+      body.priceOverride = salePrice
+    }
     await request(`/orders/${id}/items`, {
       method: 'POST',
-      body: {
-        productId: selectedProduct.value.product_id,
-        qty: Number(addItemForm.qty),
-        discountType: addItemForm.discountType,
-        discountValue: Number(addItemForm.discountValue)
-      }
+      body
     })
     isAddModalOpen.value = false
     await refreshOrder()
@@ -1325,8 +1348,18 @@ function closeLastReceiptPanel() {
                 (low stock — {{ LOW_STOCK_THRESHOLD }} or fewer left)
               </span>
             </UiDetailField>
-            <UiDetailField label="Unit price" :value="formatCurrency(Number(selectedProduct?.sale_price ?? 0))" />
+            <UiDetailField label="Catalog price" :value="formatCurrency(Number(selectedProduct?.sale_price ?? 0))" />
           </div>
+          <UiLabeledField label="Sale price (Rs)" html-for="pos-add-sale-price">
+            <UInput
+              id="pos-add-sale-price"
+              v-model.number="addItemForm.salePrice"
+              type="number"
+              min="0.01"
+              step="0.01"
+              class="w-full"
+            />
+          </UiLabeledField>
           <UiLabeledField label="Quantity" html-for="pos-add-qty">
             <UInput id="pos-add-qty" v-model.number="addItemForm.qty" type="number" min="1" step="1" class="w-full" />
           </UiLabeledField>

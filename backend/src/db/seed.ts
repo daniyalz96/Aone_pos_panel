@@ -62,7 +62,7 @@ async function seed() {
       INSERT INTO role_permissions (role_id, permission_id)
       SELECT r.id, p.id
       FROM roles r
-      JOIN permissions p ON p.key IN ('open_close_drawer')
+      JOIN permissions p ON p.key IN ('price_override', 'discount_override', 'open_close_drawer')
       WHERE r.name = 'cashier'
       ON CONFLICT DO NOTHING
     `);
