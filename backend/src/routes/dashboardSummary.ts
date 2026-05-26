@@ -8,8 +8,12 @@ import {
   SQL_NET_GROSS_PROFIT_SUM,
 } from "../services/salesMetricsSql.js";
 
+/** Calendar date YYYY-MM-DD in server local timezone (matches expenses analytics). */
 function toDateOnly(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${month}-${day}`;
 }
 
 const dashboardSummaryQuerySchema = z.object({
@@ -190,8 +194,8 @@ export async function handleDashboardSummary(req: Request, res: Response) {
             `,
             [threshold],
           ),
-      pool.query(expenseByTypeSql, [toDateOnly(todayStart), toDateOnly(now)]),
-      pool.query(expenseRangeSql, [toDateOnly(yesterdayStart), toDateOnly(yesterdayEnd)]),
+      pool.query(expenseByTypeSql, [toDateOnly(todayStart), toDateOnly(todayStart)]),
+      pool.query(expenseRangeSql, [toDateOnly(yesterdayStart), toDateOnly(yesterdayStart)]),
       pool.query(expenseRangeSql, [toDateOnly(monthStart), toDateOnly(now)]),
       pool.query(expenseRangeSql, [toDateOnly(lastMonthStart), toDateOnly(lastMonthEnd)]),
       pool.query(expenseRangeSql, [toDateOnly(yearStart), toDateOnly(now)]),
