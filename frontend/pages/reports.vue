@@ -24,7 +24,6 @@ function resolveProductId(raw: unknown): string {
 }
 
 type Branch = { id: string; name: string }
-type ProductRow = { id: string; name: string; sku: string; sale_price: number | string }
 type SaleInvoiceRow = {
   id: string
   invoice_number: string
@@ -80,7 +79,8 @@ const canReturnSale = () => {
 const errorMessage = ref('')
 const loading = ref(false)
 const branches = ref<Branch[]>([])
-const products = ref<ProductRow[]>([])
+
+const manualProductLeadingItems = [{ label: 'Select product', value: PICK_PRODUCT, name: '', sku: '' }]
 
 const filters = reactive({
   from: '',
@@ -275,13 +275,6 @@ const openManual = async () => {
     manualForm.lines = [{ productId: PICK_PRODUCT, qty: 1 }]
   }
   manualOpen.value = true
-  if (!products.value.length) {
-    try {
-      products.value = await request<ProductRow[]>('/products?isActive=true&limit=500')
-    } catch {
-      errorMessage.value = 'Could not load products for manual sale'
-    }
-  }
 }
 
 const closeManual = () => {
@@ -551,14 +544,6 @@ const paymentFilterItems = [
   { label: 'Pending', value: 'pending' },
   { label: 'Partial', value: 'partial' },
   { label: 'Paid', value: 'paid' }
-]
-
-const productItems = () => [
-  { label: 'Select product', value: PICK_PRODUCT },
-  ...products.value.map((p) => ({
-    label: `${p.name} (${p.sku})`,
-    value: p.id
-  }))
 ]
 
 onMounted(async () => {
@@ -839,7 +824,12 @@ onMounted(async () => {
                 class="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 p-2 dark:border-slate-700"
               >
                 <UiLabeledField label="Product" class="min-w-[200px] flex-1">
-                  <UiSearchableSelect v-model="line.productId" :items="productItems()" placeholder="Search product…" :ui="manualModalSelectUi" />
+                  <UiProductSearchSelect
+                    v-model="line.productId"
+                    :leading-items="manualProductLeadingItems"
+                    placeholder="Search product…"
+                    :ui="manualModalSelectUi"
+                  />
                 </UiLabeledField>
                 <UiLabeledField label="Qty" :html-for="`manual-qty-${idx}`">
                   <UInput :id="`manual-qty-${idx}`" v-model.number="line.qty" type="number" min="0.01" step="0.01" class="w-24" />

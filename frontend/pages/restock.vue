@@ -13,7 +13,6 @@ type Balance = {
 
 const { request } = useApi()
 const lowStock = ref<Balance[]>([])
-const products = ref<Array<{ id: string; name: string; sku: string }>>([])
 const errorMessage = ref('')
 
 function formatQtyWhole(value: string | number | null | undefined): string {
@@ -32,12 +31,10 @@ const stockInForm = reactive({
 const loadData = async () => {
   errorMessage.value = ''
   try {
-    const [lowRes, productRes] = await Promise.all([
-      request<Balance[]>(`/inventory/low-stock?threshold=${LOW_STOCK_THRESHOLD}`),
-      request<Array<{ id: string; name: string; sku: string }>>('/products')
+    const [lowRes] = await Promise.all([
+      request<Balance[]>(`/inventory/low-stock?threshold=${LOW_STOCK_THRESHOLD}`)
     ])
     lowStock.value = lowRes
-    products.value = productRes.map((item) => ({ id: item.id, name: item.name, sku: item.sku }))
   } catch (error: unknown) {
     errorMessage.value = (error as { message?: string }).message ?? 'Failed to load restock data'
   }
@@ -101,11 +98,7 @@ onMounted(async () => {
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Stock In</h2>
         <div class="grid gap-3">
           <UiLabeledField label="Product">
-            <UiSearchableSelect
-              v-model="stockInForm.productId"
-              :items="products.map((p) => ({ label: `${p.name} (${p.sku})`, value: p.id }))"
-              placeholder="Search product…"
-            />
+            <UiProductSearchSelect v-model="stockInForm.productId" placeholder="Search product…" />
           </UiLabeledField>
           <UiLabeledField label="Quantity" html-for="restock-qty">
             <UInput id="restock-qty" v-model.number="stockInForm.qty" type="number" class="w-full" />

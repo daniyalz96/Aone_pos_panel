@@ -23,6 +23,8 @@ const sortedProducts = computed(() =>
     .sort((a, b) => b.profit - a.profit)
 )
 
+const isEmpty = computed(() => sortedProducts.value.length === 0)
+
 function chartData() {
   const items = sortedProducts.value
   return {
@@ -32,7 +34,7 @@ function chartData() {
 }
 
 async function draw() {
-  if (!import.meta.client || !hostRef.value) return
+  if (!import.meta.client || !hostRef.value || isEmpty.value) return
   const Highcharts = (await import('highcharts')).default
 
   chart?.destroy()
@@ -109,7 +111,18 @@ async function draw() {
 }
 
 onMounted(() => void draw())
-watch(sortedProducts, () => void draw(), { deep: true })
+watch(
+  [sortedProducts, isEmpty],
+  () => {
+    if (isEmpty.value) {
+      chart?.destroy()
+      chart = null
+      return
+    }
+    void draw()
+  },
+  { deep: true }
+)
 onUnmounted(() => {
   chart?.destroy()
   chart = null
@@ -117,7 +130,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="hostRef" class="dashboard-top-profit-products w-full min-h-[320px]" />
+  <div
+    v-if="isEmpty"
+    class="flex min-h-[320px] items-center justify-center text-sm text-slate-500 dark:text-slate-400"
+  >
+    No product sales in the last 30 days yet.
+  </div>
+  <div v-else ref="hostRef" class="dashboard-top-profit-products w-full min-h-[320px]" />
 </template>
 
 <style scoped>

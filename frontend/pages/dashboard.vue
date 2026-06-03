@@ -397,11 +397,11 @@ const canViewAnalytics = computed(() => {
 const analyticsLoading = ref(false)
 const analyticsLive = ref(false)
 
-const hourlySeries = ref<{ label: string; amount: number }[]>([...DEMO_HOURLY])
-const weeklySalesProfitSeries = ref<WeekSalesProfitPoint[]>([...DEMO_WEEK_SALES_PROFIT])
-const topProfitProducts = ref<TopProfitProductPoint[]>([...DEMO_TOP_PROFIT_PRODUCTS])
-const monthlyProfitSeries = ref<MonthlyProfitPoint[]>([...DEMO_MONTHLY_PROFIT])
-const monthlySalesPieSeries = ref<{ name: string; y: number }[]>([...DEMO_MONTHLY_SALES_PIE])
+const hourlySeries = ref<{ label: string; amount: number }[]>([])
+const weeklySalesProfitSeries = ref<WeekSalesProfitPoint[]>([])
+const topProfitProducts = ref<TopProfitProductPoint[]>([])
+const monthlyProfitSeries = ref<MonthlyProfitPoint[]>([])
+const monthlySalesPieSeries = ref<{ name: string; y: number }[]>([])
 
 function startOfDay(d: Date) {
   const x = new Date(d)
@@ -458,6 +458,33 @@ function monthlySalesRowsToPie(rows: SalesTrendRow[]): { name: string; y: number
   }))
 }
 
+function padLastMonthsSalesProfit(
+  marginRows: ProfitMarginRow[],
+  salesByMonth: Map<string, number>,
+  expenseByMonth: Map<string, number>,
+  monthCount = 6
+): MonthlyProfitPoint[] {
+  const marginMap = new Map<string, ProfitMarginRow>()
+  for (const r of marginRows) {
+    const key = String(r.month).trim().slice(0, 7)
+    if (key.length >= 7) marginMap.set(key, r)
+  }
+  const out: MonthlyProfitPoint[] = []
+  const now = new Date()
+  for (let i = monthCount - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const m = marginMap.get(monthKey)
+    out.push({
+      label: d.toLocaleString(undefined, { month: 'short' }),
+      sales: salesByMonth.get(monthKey) ?? 0,
+      profit: m ? Number(m.gross_profit) : 0,
+      expenses: expenseByMonth.get(monthKey) ?? 0
+    })
+  }
+  return out
+}
+
 function padLastDaysSalesProfit(
   rows: SalesTrendRow[],
   expenseByDay: Map<string, number>,
@@ -510,6 +537,22 @@ function salesTrendToMonthMap(rows: SalesTrendRow[]): Map<string, number> {
   return map
 }
 
+function applyDemoAnalytics() {
+  hourlySeries.value = [...DEMO_HOURLY]
+  weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
+  topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
+  monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
+  monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
+}
+
+function clearAnalytics() {
+  hourlySeries.value = [{ label: '—', amount: 0 }]
+  weeklySalesProfitSeries.value = padLastDaysSalesProfit([], new Map(), 7)
+  topProfitProducts.value = []
+  monthlyProfitSeries.value = padLastMonthsSalesProfit([], new Map(), new Map(), 6)
+  monthlySalesPieSeries.value = []
+}
+
 async function loadAnalytics() {
   if (!import.meta.client) return
 
@@ -517,11 +560,7 @@ async function loadAnalytics() {
 
   if (!canViewAnalytics.value) {
     analyticsLive.value = false
-    hourlySeries.value = [...DEMO_HOURLY]
-    weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
-    topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
-    monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
-    monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
+    applyDemoAnalytics()
     return
   }
 
@@ -568,7 +607,7 @@ async function loadAnalytics() {
           : [{ label: '—', amount: 0 }]
       anyLive = true
     } else {
-      hourlySeries.value = [...DEMO_HOURLY]
+      hourlySeries.value = [{ label: '—', amount: 0 }]
     }
 
     if (weekRes.status === 'fulfilled' || weekExpRes.status === 'fulfilled') {
@@ -580,7 +619,7 @@ async function loadAnalytics() {
       weeklySalesProfitSeries.value = padLastDaysSalesProfit(salesRows, expenseByDay, 7)
       anyLive = true
     } else {
-      weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
+      weeklySalesProfitSeries.value = padLastDaysSalesProfit([], new Map(), 7)
     }
 
     if (topRes.status === 'fulfilled') {
@@ -593,11 +632,8 @@ async function loadAnalytics() {
         }))
         .sort((a, b) => b.profit - a.profit)
         .slice(0, 6)
-      if (!topProfitProducts.value.length) {
-        topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
-      }
     } else {
-      topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
+      topProfitProducts.value = []
     }
 
     const salesByMonth =
@@ -607,62 +643,30 @@ async function loadAnalytics() {
 
     if (marginRes.status === 'fulfilled') {
       anyLive = true
-      const marginRows = marginRes.value
-      const months = [...marginRows].sort((a, b) => a.month.localeCompare(b.month))
-      const lastSix = months.slice(-6)
-      if (lastSix.length > 0) {
-        monthlyProfitSeries.value = lastSix.map((m) => {
-          const parts = m.month.split('-')
-          const monthNum = parts.length >= 2 ? Number(parts[1]) : Number.NaN
-          const label = Number.isFinite(monthNum)
-            ? new Date(2000, monthNum - 1, 1).toLocaleString(undefined, { month: 'short' })
-            : m.month
-          return {
-            label,
-            sales: salesByMonth.get(m.month) ?? 0,
-            profit: Number(m.gross_profit),
-            expenses: expenseByMonth.get(m.month) ?? 0
-          }
-        })
-      } else {
-        monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
-      }
+      monthlyProfitSeries.value = padLastMonthsSalesProfit(
+        marginRes.value,
+        salesByMonth,
+        expenseByMonth,
+        6
+      )
     } else if (salesByMonth.size > 0) {
       anyLive = true
-      const keys = [...salesByMonth.keys()].sort().slice(-6)
-      monthlyProfitSeries.value = keys.map((monthKey) => {
-        const parts = monthKey.split('-')
-        const monthNum = parts.length >= 2 ? Number(parts[1]) : Number.NaN
-        const label = Number.isFinite(monthNum)
-          ? new Date(2000, monthNum - 1, 1).toLocaleString(undefined, { month: 'short' })
-          : monthKey
-        return {
-          label,
-          sales: salesByMonth.get(monthKey) ?? 0,
-          profit: 0,
-          expenses: expenseByMonth.get(monthKey) ?? 0
-        }
-      })
+      monthlyProfitSeries.value = padLastMonthsSalesProfit([], salesByMonth, expenseByMonth, 6)
     } else {
-      monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
+      monthlyProfitSeries.value = padLastMonthsSalesProfit([], salesByMonth, expenseByMonth, 6)
     }
 
     if (monthPieRes.status === 'fulfilled') {
-      const pieFromSales = monthlySalesRowsToPie(monthPieRes.value)
-      monthlySalesPieSeries.value = pieFromSales.length ? pieFromSales : [...DEMO_MONTHLY_SALES_PIE]
+      monthlySalesPieSeries.value = monthlySalesRowsToPie(monthPieRes.value)
       anyLive = true
     } else {
-      monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
+      monthlySalesPieSeries.value = []
     }
 
     analyticsLive.value = anyLive
   } catch {
     analyticsLive.value = false
-    hourlySeries.value = [...DEMO_HOURLY]
-    weeklySalesProfitSeries.value = [...DEMO_WEEK_SALES_PROFIT]
-    topProfitProducts.value = [...DEMO_TOP_PROFIT_PRODUCTS]
-    monthlyProfitSeries.value = [...DEMO_MONTHLY_PROFIT]
-    monthlySalesPieSeries.value = [...DEMO_MONTHLY_SALES_PIE]
+    clearAnalytics()
   } finally {
     analyticsLoading.value = false
   }
@@ -782,9 +786,9 @@ watch(canViewAnalytics, (ok) => {
           <div>
             <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Monthly sales</h2>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Posted invoice totals by month · last {{ monthlySalesPieSeries.length }} buckets
-              <span v-if="analyticsLive">(live)</span>
-              <span v-else>(demo)</span>
+              Posted invoice totals by month
+              <span v-if="analyticsLive"> · live data</span>
+              <span v-else-if="!canViewAnalytics"> · sample preview</span>
             </p>
           </div>
           <div class="flex items-center gap-2">

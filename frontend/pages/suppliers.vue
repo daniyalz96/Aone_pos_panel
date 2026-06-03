@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ApiError, useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
+import { productToSelectItem } from '~/composables/useProductSearch'
 
 type LinkedCategory = { id: string; name: string }
 type LinkedProduct = { id: string; name: string; sku: string }
@@ -28,7 +29,6 @@ type SupplierRow = {
 }
 
 type CatalogCategory = { id: string; name: string }
-type CatalogProduct = { id: string; name: string; sku: string }
 
 type LedgerEntry = {
   id: string
@@ -103,7 +103,6 @@ const loadingDetail = ref(false)
 
 const catalogLoadError = ref('')
 const catalogCategories = ref<CatalogCategory[]>([])
-const catalogProducts = ref<CatalogProduct[]>([])
 const modalCategoryIds = ref<string[]>([])
 const modalProductIds = ref<string[]>([])
 
@@ -120,19 +119,8 @@ const categorySelectItems = computed(() =>
     .filter((x): x is { label: string; value: string } => x !== null)
 )
 
-const productSelectItems = computed(() =>
-  catalogProducts.value
-    .map((p) => {
-      const value = normalizeUuidStr(p.id)
-      if (!value) return null
-      return {
-        label: p.sku ? `${p.name} (${p.sku})` : p.name,
-        value,
-        name: p.name,
-        sku: p.sku
-      }
-    })
-    .filter((x): x is { label: string; value: string; name: string; sku: string } => x !== null)
+const editProductPinnedItems = computed(() =>
+  detail.value ? parseLinkedProductsFromSupplier(detail.value).map(productToSelectItem) : []
 )
 
 const createForm = reactive({
@@ -250,12 +238,7 @@ function linkProductPreview(items: LinkedProduct[], maxNames = 2): string {
 const loadCatalogRefs = async () => {
   try {
     catalogLoadError.value = ''
-    const [cats, prods] = await Promise.all([
-      request<CatalogCategory[]>('/products/categories'),
-      request<Array<{ id: string; name: string; sku?: string | null }>>(
-        '/products?limit=500&isActive=true&sort=name_asc'
-      )
-    ])
+    const cats = await request<CatalogCategory[]>('/products/categories')
     catalogCategories.value = (cats ?? [])
       .map((c) => {
         const id = normalizeUuidStr(c.id)
@@ -263,20 +246,9 @@ const loadCatalogRefs = async () => {
         return { id, name: c.name }
       })
       .filter((x): x is CatalogCategory => x !== null)
-    catalogProducts.value = (prods ?? [])
-      .map((p) => {
-        const id = normalizeUuidStr(p.id)
-        if (!id) return null
-        return {
-          id,
-          name: p.name,
-          sku: String(p.sku ?? '')
-        }
-      })
-      .filter((x): x is CatalogProduct => x !== null)
     createCatalogUiKey.value += 1
   } catch (e: unknown) {
-    catalogLoadError.value = e instanceof ApiError ? e.message : 'Failed to load categories / products for suppliers'
+    catalogLoadError.value = e instanceof ApiError ? e.message : 'Failed to load categories for suppliers'
   }
 }
 
@@ -539,18 +511,13 @@ onMounted(async () => {
         <div class="flex min-w-0 flex-col gap-2 sm:col-span-2 lg:col-span-3">
           <label class="block text-xs font-medium text-slate-600 dark:text-slate-300" for="sup-new-products">Supplies — products</label>
           <p class="text-xs text-slate-500">Search by name or SKU; pick multiple products.</p>
-          <USelectMenu
+          <UiProductSearchSelect
             id="sup-new-products"
             :key="'new-prod-' + createCatalogUiKey"
             v-model="createForm.catalogProductIds"
             multiple
-            value-key="value"
-            label-key="label"
-            :items="productSelectItems"
-            :filter-fields="['label', 'name', 'sku']"
             placeholder="Search products…"
             class="w-full max-w-xl"
-            :disabled="!productSelectItems.length"
             :reset-search-term-on-select="false"
           />
         </div>
@@ -700,19 +667,15 @@ onMounted(async () => {
                   </div>
                   <div class="flex min-w-0 flex-col gap-2">
                     <label class="text-xs font-medium text-slate-600 dark:text-slate-300" for="sup-edit-products">Products</label>
-                    <USelectMenu
+                    <UiProductSearchSelect
                       id="sup-edit-products"
                       :key="'edit-prod-' + supplierCatalogUiKey"
                       v-model="modalProductIds"
                       multiple
-                      value-key="value"
-                      label-key="label"
-                      :items="productSelectItems"
-                      :filter-fields="['label', 'name', 'sku']"
+                      :pinned-items="editProductPinnedItems"
                       placeholder="Search products…"
                       class="w-full"
                       :content="supplierSelectContent"
-                      :disabled="!productSelectItems.length"
                       :reset-search-term-on-select="false"
                     />
                   </div>

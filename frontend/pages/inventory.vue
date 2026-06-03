@@ -49,7 +49,6 @@ const balancePage = ref(1)
 const lowStock = ref<Balance[]>([])
 const lowStockTotal = ref(0)
 const lowStockPage = ref(1)
-const products = ref<Array<{ id: string; name: string; sku: string }>>([])
 const movements = ref<Array<{ id: string; product_name: string; movement_type: string; qty: number; created_at: string }>>([])
 const movementTotal = ref(0)
 const movementPage = ref(1)
@@ -511,15 +510,13 @@ const loadData = async () => {
   lowStockLoading.value = true
   movementLoading.value = true
   try {
-    const [, , , productList, deptRes, categoryRes] = await Promise.all([
+    const [, , , deptRes, categoryRes] = await Promise.all([
       loadBalancesPage(),
       loadLowStockPage(),
       loadMovementsPage(),
-      request<Array<{ id: string; name: string; sku: string }>>('/products'),
       request<Department[]>('/products/departments'),
       request<ProductCategory[]>('/products/categories')
     ])
-    products.value = productList.map((item) => ({ id: item.id, name: item.name, sku: item.sku }))
     departments.value = deptRes
     categories.value = categoryRes
   } catch (error: unknown) {
@@ -815,11 +812,7 @@ onMounted(async () => {
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Stock In</h2>
         <div class="grid gap-3">
           <UiLabeledField label="Product">
-            <UiSearchableSelect
-              v-model="stockInForm.productId"
-              :items="products.map((p) => ({ label: `${p.name} (${p.sku})`, value: p.id }))"
-              placeholder="Search product…"
-            />
+            <UiProductSearchSelect v-model="stockInForm.productId" placeholder="Search product…" />
           </UiLabeledField>
           <UiLabeledField label="Quantity" html-for="inv-in-qty">
             <UInput id="inv-in-qty" v-model.number="stockInForm.qty" type="number" class="w-full" />
@@ -838,11 +831,7 @@ onMounted(async () => {
         <h2 class="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Stock Out</h2>
         <div class="grid gap-3">
           <UiLabeledField label="Product">
-            <UiSearchableSelect
-              v-model="stockOutForm.productId"
-              :items="products.map((p) => ({ label: `${p.name} (${p.sku})`, value: p.id }))"
-              placeholder="Search product…"
-            />
+            <UiProductSearchSelect v-model="stockOutForm.productId" placeholder="Search product…" />
           </UiLabeledField>
           <UiLabeledField label="Quantity" html-for="inv-out-qty">
             <UInput id="inv-out-qty" v-model.number="stockOutForm.qty" type="number" class="w-full" />
