@@ -4,6 +4,7 @@ import { useApi } from '~/composables/useApi'
 import { clearPosSession, readPosSession, writePosSession } from '~/composables/usePosSession'
 import { useTodayOverview } from '~/composables/useTodayOverview'
 import { LOW_STOCK_THRESHOLD } from '~/constants/inventory'
+import { RECEIPT_FOOTER_NOTE, STORE_INFO, STORE_LOGO_PATH } from '~/constants/store'
 
 type Product = {
   id: string
@@ -252,7 +253,7 @@ function escapeHtml(text: string) {
 }
 
 function openPrintWindow(html: string, title: string) {
-  const popup = window.open('', '_blank', 'width=900,height=700')
+  const popup = window.open('', '_blank', 'width=420,height=760')
   if (!popup) {
     errorMessage.value = 'Popup blocked. Please allow popups and try again.'
     return false
@@ -260,7 +261,32 @@ function openPrintWindow(html: string, title: string) {
   popup.document.write(html)
   popup.document.close()
   popup.focus()
-  popup.print()
+
+  const printDocument = () => {
+    popup.focus()
+    popup.print()
+  }
+
+  const images = Array.from(popup.document.images)
+  if (images.length === 0) {
+    printDocument()
+    return true
+  }
+
+  let settled = 0
+  const onImageSettled = () => {
+    settled += 1
+    if (settled >= images.length) printDocument()
+  }
+
+  for (const image of images) {
+    if (image.complete) onImageSettled()
+    else {
+      image.onload = onImageSettled
+      image.onerror = onImageSettled
+    }
+  }
+
   return true
 }
 const clearError = () => {
@@ -728,19 +754,182 @@ const collectPayment = async () => {
   }
 }
 
+/** 80mm roll. Zero page margin keeps browser headers/footers off the printout. */
 const receiptPrintStyles = `
-  body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; }
-  h1, h2, p { margin: 0; }
-  .meta { margin-top: 5px; color: #475569; font-size: 13px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-  th, td { border-bottom: 1px solid #e2e8f0; padding: 10px 6px; text-align: left; font-size: 14px; }
-  th { background: #f8fafc; }
-  td.num, th.num { text-align: right; }
-  .totals { width: 340px; margin-left: auto; margin-top: 18px; }
-  .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 14px; }
-  .grand { font-weight: 700; border-top: 1px solid #cbd5e1; margin-top: 6px; padding-top: 8px; }
-  .footer { margin-top: 22px; text-align: center; color: #64748b; font-size: 12px; }
+  @page { size: 80mm auto; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body {
+    width: 80mm;
+    padding: 5mm 4mm 7mm;
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .center { text-align: center; }
+  .logo-wrap {
+    width: 100%;
+    margin: 0 auto 3mm;
+  }
+  .store-logo {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 27mm;
+    margin: 0 auto;
+    object-fit: contain;
+  }
+  .store-line { font-size: 11px; margin-top: 2mm; }
+  .rule { border-top: 1px dashed #000; margin: 6px 0; }
+  .rule-bold { border-top: 2px solid #000; margin: 6px 0; }
+  .meta { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+  .meta span:last-child { text-align: right; word-break: break-word; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { vertical-align: top; padding: 3px 0; font-size: 11px; }
+  th { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid #000; text-align: left; }
+  th.num, td.num { text-align: right; white-space: nowrap; }
+  .items col.col-item { width: 44%; }
+  .items col.col-qty { width: 12%; }
+  .items col.col-rate { width: 22%; }
+  .items col.col-amount { width: 22%; }
+  .items th, .items td { padding: 3px 1px; }
+  .items th:first-child, .items td:first-child { padding-left: 0; text-align: left; }
+  .items th.num, .items td.num { padding-right: 0; }
+  .items td { border-bottom: 1px dotted #999; }
+  .items tr:last-child td { border-bottom: none; }
+  .item-name { word-break: break-word; font-weight: 600; }
+  .item-note td { font-size: 10px; padding-top: 0; border-bottom: none; }
+  .row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 1px 0; }
+  .row span:last-child { white-space: nowrap; }
+  .row.grand { font-size: 16px; font-weight: 700; padding: 4px 0; }
+  .footer { text-align: center; font-size: 11px; margin-top: 8px; }
+  .footer-strong { font-weight: 700; }
 `
+
+const formatReceiptMoney = (amount: number) =>
+  Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+const formatReceiptQty = (qty: number) => (Number.isInteger(qty) ? String(qty) : String(Number(qty.toFixed(3))))
+
+type ReceiptPrintLine = {
+  name: string
+  qty: number
+  unitPrice: number
+  discount?: number
+  lineTotal: number
+}
+
+type ReceiptPrintOptions = {
+  receiptNo: string
+  meta: Array<[string, string]>
+  lines: ReceiptPrintLine[]
+  totals: {
+    subtotal: number
+    discount: number
+    tax: number
+    roundOff?: number
+    total: number
+  }
+  tenderLines?: Array<[string, string]>
+}
+
+function getStoreLogoUrl() {
+  if (!import.meta.client) return `${STORE_LOGO_PATH}?v=3`
+  return `${window.location.origin}${STORE_LOGO_PATH}?v=3`
+}
+
+function buildReceiptHtml({ receiptNo, meta, lines, totals, tenderLines = [] }: ReceiptPrintOptions) {
+  const logoUrl = getStoreLogoUrl()
+  const storeLines = [STORE_INFO.address, STORE_INFO.phone ? `Tel: ${STORE_INFO.phone}` : '', STORE_INFO.taxNumber ? `NTN: ${STORE_INFO.taxNumber}` : '']
+    .filter(Boolean)
+    .map((line) => `<div class="store-line">${escapeHtml(line)}</div>`)
+    .join('')
+
+  const metaHtml = meta
+    .map(([label, value]) => `<div class="meta"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`)
+    .join('')
+
+  const itemsHtml = lines
+    .map((line) => {
+      const discountRow =
+        line.discount && line.discount > 0
+          ? `<tr class="item-note"><td colspan="4">Discount -${formatReceiptMoney(line.discount)}</td></tr>`
+          : ''
+      return `
+        <tr>
+          <td class="item-name">${escapeHtml(line.name)}</td>
+          <td class="num">${formatReceiptQty(line.qty)}</td>
+          <td class="num">${formatReceiptMoney(line.unitPrice)}</td>
+          <td class="num">${formatReceiptMoney(line.lineTotal)}</td>
+        </tr>
+        ${discountRow}`
+    })
+    .join('')
+
+  const totalQty = lines.reduce((sum, line) => sum + line.qty, 0)
+
+  const optionalTotals = [
+    totals.discount > 0 ? `<div class="row"><span>Discount</span><span>-${formatReceiptMoney(totals.discount)}</span></div>` : '',
+    totals.tax > 0 ? `<div class="row"><span>Tax</span><span>${formatReceiptMoney(totals.tax)}</span></div>` : '',
+    totals.roundOff ? `<div class="row"><span>Round off</span><span>${formatReceiptMoney(totals.roundOff)}</span></div>` : ''
+  ].join('')
+
+  const tenderHtml = tenderLines.length
+    ? `<div class="rule"></div>${tenderLines
+        .map(([label, value]) => `<div class="row"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`)
+        .join('')}`
+    : ''
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(receiptNo)}</title>
+    <style>${receiptPrintStyles}</style>
+  </head>
+  <body>
+    <div class="center">
+      <div class="logo-wrap">
+        <img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(STORE_INFO.name)}" class="store-logo" />
+      </div>
+      ${storeLines}
+    </div>
+    <div class="rule-bold"></div>
+    ${metaHtml}
+    <div class="rule"></div>
+    <table class="items">
+      <colgroup>
+        <col class="col-item" />
+        <col class="col-qty" />
+        <col class="col-rate" />
+        <col class="col-amount" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="num">Qty</th>
+          <th class="num">Rate</th>
+          <th class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>${itemsHtml}</tbody>
+    </table>
+    <div class="rule"></div>
+    <div class="row"><span>Items ${lines.length}</span><span>Qty ${formatReceiptQty(totalQty)}</span></div>
+    <div class="rule"></div>
+    <div class="row"><span>Subtotal</span><span>${formatReceiptMoney(totals.subtotal)}</span></div>
+    ${optionalTotals}
+    <div class="rule-bold"></div>
+    <div class="row grand"><span>TOTAL</span><span>Rs ${formatReceiptMoney(totals.total)}</span></div>
+    <div class="rule-bold"></div>
+    ${tenderHtml}
+    <div class="footer footer-strong">${escapeHtml(RECEIPT_FOOTER_NOTE)}</div>
+  </body>
+</html>`
+}
 
 const printBill = () => {
   if (cart.value.length === 0) {
@@ -748,54 +937,30 @@ const printBill = () => {
     return
   }
 
-  const receiptNo = invoiceId.value ? `INV-${invoiceId.value.slice(0, 8)}` : `TEMP-${Date.now().toString().slice(-6)}`
-  const printedAt = new Date().toLocaleString()
-  const rowsHtml = cart.value
-    .map(
-      (item) => `
-      <tr>
-        <td>${escapeHtml(item.product_name)}</td>
-        <td class="num">${item.qty}</td>
-        <td class="num">${formatCurrency(item.unit_price)}</td>
-        <td class="num">${formatCurrency(item.line_total)}</td>
-      </tr>`
-    )
-    .join('')
+  const receiptNo = invoiceId.value ? `INV-${invoiceId.value.slice(0, 8).toUpperCase()}` : `TEMP-${Date.now().toString().slice(-6)}`
 
   openPrintWindow(
-    `<!doctype html>
-    <html>
-      <head>
-        <title>Receipt ${escapeHtml(receiptNo)}</title>
-        <style>${receiptPrintStyles}</style>
-      </head>
-      <body>
-        <h1>Aone POS</h1>
-        <p class="meta">Receipt: ${escapeHtml(receiptNo)}</p>
-        <p class="meta">Printed: ${escapeHtml(printedAt)}</p>
-        <p class="meta">Order: ${escapeHtml(orderId.value ?? '-')}</p>
-        <p class="meta">Invoice: ${escapeHtml(invoiceId.value ?? 'Not posted yet')}</p>
-        <h2 style="margin-top: 16px;">Customer Receipt</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th class="num">Qty</th>
-              <th class="num">Rate</th>
-              <th class="num">Amount</th>
-            </tr>
-          </thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-        <div class="totals">
-          <div class="row"><span>Subtotal</span><span>${formatCurrency(subtotal.value)}</span></div>
-          <div class="row"><span>Discount</span><span>- ${formatCurrency(discountTotal.value)}</span></div>
-          <div class="row"><span>Tax</span><span>${formatCurrency(tax.value)}</span></div>
-          <div class="row grand"><span>Total</span><span>${formatCurrency(total.value)}</span></div>
-        </div>
-        <p class="footer">Thank you for shopping with Aone POS.</p>
-      </body>
-    </html>`,
+    buildReceiptHtml({
+      receiptNo,
+      meta: [
+        ['Invoice No', receiptNo],
+        ['Date', new Date().toLocaleString()],
+        ...(invoiceId.value ? [] : [['Status', 'Draft — not posted']])
+      ] as Array<[string, string]>,
+      lines: cart.value.map((item) => ({
+        name: item.product_name,
+        qty: item.qty,
+        unitPrice: item.unit_price,
+        discount: Number(item.discount_amount ?? 0),
+        lineTotal: item.line_total
+      })),
+      totals: {
+        subtotal: subtotal.value,
+        discount: discountTotal.value,
+        tax: tax.value,
+        total: total.value
+      }
+    }),
     receiptNo
   )
 }
@@ -808,102 +973,41 @@ const printLastReceipt = () => {
   }
 
   const receiptNo = r.header.invoiceNumber
-  const printedAt = new Date().toLocaleString()
-  const metaRows = [
-    ['Invoice', r.header.invoiceNumber],
+
+  const meta: Array<[string, string]> = [
+    ['Invoice No', r.header.invoiceNumber],
     ['Date', formatReceiptDate(r.header.createdAt)],
-    ...(r.header.customerName ? [['Customer', r.header.customerName] as const] : []),
-    ...(r.header.cashierName ? [['Cashier', r.header.cashierName] as const] : []),
-    ...(r.header.branchName ? [['Branch', r.header.branchName] as const] : [])
+    ...(r.header.branchName ? ([['Branch', r.header.branchName]] as Array<[string, string]>) : []),
+    ...(r.header.cashierName ? ([['Cashier', r.header.cashierName]] as Array<[string, string]>) : []),
+    ['Customer', r.header.customerName ?? 'Walk-in']
   ]
-    .map(
-      ([label, value]) =>
-        `<tr><th style="text-align:left;padding:4px 12px 4px 0;color:#64748b;">${escapeHtml(label)}</th><td>${escapeHtml(String(value))}</td></tr>`
-    )
-    .join('')
 
-  const itemRows = r.items
-    .map(
-      (line) => `
-      <tr>
-        <td>${escapeHtml(line.productName)}</td>
-        <td class="num">${line.qty}</td>
-        <td class="num">${formatCurrency(line.unitPrice)}</td>
-        <td class="num">${formatCurrency(line.discountAmount)}</td>
-        <td class="num">${formatCurrency(line.taxAmount)}</td>
-        <td class="num">${formatCurrency(line.lineTotal)}</td>
-      </tr>`
-    )
-    .join('')
-
-  const paymentRows = r.payments
-    .map(
-      (pay) => `
-      <tr>
-        <td>${escapeHtml(pay.status)}</td>
-        <td class="num">${escapeHtml(pay.method)}</td>
-        <td class="num">${formatCurrency(pay.amount)}</td>
-      </tr>`
-    )
-    .join('')
-
-  const paymentsTable =
-    r.payments.length > 0
-      ? `
-        <h2 style="margin-top: 20px; font-size: 16px;">Payments</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th class="num">Method</th>
-              <th class="num">Amount</th>
-            </tr>
-          </thead>
-          <tbody>${paymentRows}</tbody>
-        </table>`
-      : ''
+  const tenderLines: Array<[string, string]> = [
+    ...r.payments.map((pay) => [pay.method.toUpperCase(), formatReceiptMoney(pay.amount)] as [string, string]),
+    ['Payment status', r.totals.paymentStatus.toUpperCase()],
+    ...(r.totals.returnTotal > 0 ? ([['Returned', formatReceiptMoney(r.totals.returnTotal)]] as Array<[string, string]>) : [])
+  ]
 
   openPrintWindow(
-    `<!doctype html>
-    <html>
-      <head>
-        <title>Receipt ${escapeHtml(receiptNo)}</title>
-        <style>${receiptPrintStyles}</style>
-      </head>
-      <body>
-        <h1>Aone POS</h1>
-        <p class="meta">Printed: ${escapeHtml(printedAt)}</p>
-        <table style="margin-top:12px;font-size:13px;">${metaRows}</table>
-        <h2 style="margin-top: 16px; font-size: 16px;">Items</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th class="num">Qty</th>
-              <th class="num">Rate</th>
-              <th class="num">Disc.</th>
-              <th class="num">Tax</th>
-              <th class="num">Total</th>
-            </tr>
-          </thead>
-          <tbody>${itemRows}</tbody>
-        </table>
-        ${paymentsTable}
-        <div class="totals">
-          <div class="row"><span>Subtotal</span><span>${formatCurrency(r.totals.subtotal)}</span></div>
-          <div class="row"><span>Discount</span><span>- ${formatCurrency(r.totals.discountTotal)}</span></div>
-          <div class="row"><span>Tax</span><span>${formatCurrency(r.totals.taxTotal)}</span></div>
-          ${
-            r.totals.roundOff
-              ? `<div class="row"><span>Round off</span><span>${formatCurrency(r.totals.roundOff)}</span></div>`
-              : ''
-          }
-          <div class="row grand"><span>Grand total</span><span>${formatCurrency(r.totals.totalAmount)}</span></div>
-          <div class="row"><span>Payment status</span><span>${escapeHtml(r.totals.paymentStatus)}</span></div>
-        </div>
-        <p class="footer">Thank you for shopping with Aone POS.</p>
-      </body>
-    </html>`,
+    buildReceiptHtml({
+      receiptNo,
+      meta,
+      lines: r.items.map((line) => ({
+        name: line.productName,
+        qty: line.qty,
+        unitPrice: line.unitPrice,
+        discount: line.discountAmount,
+        lineTotal: line.lineTotal
+      })),
+      totals: {
+        subtotal: r.totals.subtotal,
+        discount: r.totals.discountTotal,
+        tax: r.totals.taxTotal,
+        roundOff: r.totals.roundOff,
+        total: r.totals.totalAmount
+      },
+      tenderLines
+    }),
     receiptNo
   )
 }
